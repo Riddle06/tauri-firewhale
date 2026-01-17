@@ -72,7 +72,7 @@
 目標
 - 程式啟動時, 會有一個主視窗可以先選擇之前儲存或是新增 Connection 的列表, 選擇後會出現一個新視窗, 新視窗 title 會叫做 (<connection_name> - Firewhale)
   - 新增 connection 時需要選擇 credential 的 .json 檔
-- 新的視窗的左邊是 collection 的 list（預設先塞入假的 collections list 方便驗證）
+- 新的視窗的左邊是 collection 的 list（資料來源為 Firestore）
 - 支援 create collection（新增後立即出現在 list）
 - collection list 以 table list 呈現，過多時 scrollbar 只在 collection block
 - 按下 + 或是 New tab 時, 上方的 tab 保留, 下方的內容都需淨空
@@ -85,7 +85,6 @@
 - [x] 左側 collection list（取代手動輸入）
 - [x] New tab 行為（保留 tabs bar、內容清空、可重新選 collection）
 - [x] Query 在上方；Result / Query Console 以 tabs 呈現（預設 Result）
-- [x] 假 collections list seed（預設顯示）
 - [x] Create collection（新增 collection 並可選）
 - [x] Collection list table layout（含內部 scrollbar）
 - [x] Query Run 按鈕
@@ -98,7 +97,7 @@
 - [x] 調整 New tab 流程：建立空白 tab、清空 editor/result/console
 - [x] 調整主版面：Query 在上方，下方為 Result / Query Console tabs
 - [x] 預設顯示 Result tab，可切換到 Query Console
-- [x] 塞入假 collections list（workspace 預設資料）
+- [x] 移除 mock collections seed
 - [x] 新增 create collection 流程（輸入 + 去重 + 立即顯示）
 - [x] 調整 collection list 為 table layout + block 內 scrollbar
 - [x] 新增 Query Run 按鈕（先 UI）
@@ -107,7 +106,7 @@
 - [x] 啟動後先看到 Launcher；選擇 connection 會開新 Workspace 視窗
 - [x] 新視窗 title 顯示為 "<connection_name> - Firewhale"
 - [x] 新增 connection 時必須選擇 credential 的 .json 檔，未選不可建立
-- [x] Workspace 左側預設顯示假 collections list
+- [x] Workspace 左側顯示 collection list（由 Firestore 載入）
 - [x] 可新增 collection，新增後立刻出現在 list 並可選
 - [x] Collection list 為 table list 且 scrollbar 僅在 collection block
 - [x] 按 + / New tab 後，tabs bar 保留、下方內容清空
@@ -133,11 +132,13 @@
 - [x] AST validator（語法/規則）
 - [x] Query runner（collection/where/orderBy/limit/get；目前為 mock data）
 - [x] 簡易 result viewer（table + row summary）
+- [x] Firestore collection list loader（service account）
 
 任務
 - [x] 定義 Firestore chain 解析規格（db.collection / where / orderBy / limit / get）
 - [x] AST → query runner mapping（目前為 mock data）
 - [x] 錯誤處理（invalid argument）
+- [x] 透過 service account 撈取 collection list
 
 驗收條件
 - [x] 可對指定 collection 跑 collection/where/orderBy/limit/get 並顯示結果
@@ -145,7 +146,7 @@
 
 測試門檻
 - [x] Unit：parser + validator
-- [ ] Integration：Firestore emulator 基本查詢
+- [x] Integration：Firestore emulator 基本查詢
 
 ---
 

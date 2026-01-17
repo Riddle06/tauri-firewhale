@@ -1,13 +1,5 @@
 import type { TabState, WorkspaceState } from "$lib/models";
 
-export const DEFAULT_COLLECTIONS = [
-  "users",
-  "orders",
-  "projects",
-  "teams",
-  "audit_logs"
-];
-
 export function createId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -46,6 +38,6 @@ export function createWorkspaceState(connectionId: string): WorkspaceState {
     openConnectionIds: [connectionId],
     tabs: [firstTab],
     activeTabId: firstTab.id,
-    collections: [...DEFAULT_COLLECTIONS]
+    collections: []
   };
 }

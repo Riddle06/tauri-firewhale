@@ -22,6 +22,14 @@ class QueryParseError extends Error {
   }
 }
 
+function normalizeSmartQuotes(input: string): string {
+  return input
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, "\"")
+    .replace(/\uFF07/g, "'")
+    .replace(/\uFF02/g, "\"");
+}
+
 function isIdentifierStart(char: string): boolean {
   return /[A-Za-z_$]/.test(char);
 }
@@ -225,12 +233,13 @@ function parseGet(parser: Parser): void {
 }
 
 export function parseQueryChain(input: string): QueryParseResult {
-  if (!input.trim()) {
+  const normalizedInput = normalizeSmartQuotes(input);
+  if (!normalizedInput.trim()) {
     return { ok: false, error: "Query is required." };
   }
 
   try {
-    const tokens = lex(input);
+    const tokens = lex(normalizedInput);
     const parser = new Parser(tokens);
     let sawDb = false;
 

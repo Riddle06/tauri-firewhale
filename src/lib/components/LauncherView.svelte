@@ -68,7 +68,8 @@
         title: "Select credential JSON",
         multiple: false,
         directory: false,
-        filters: [{ name: "Credential JSON", extensions: ["json"] }]
+        filters: [{ name: "Credential JSON", extensions: ["json"] }],
+        fileAccessMode: "copy"
       });
       if (!selected || Array.isArray(selected)) return;
       const picked = selected.toString();

@@ -15,8 +15,10 @@
     {
       "identifier": "fs:scope",
       "allow": [
+        { "path": "$APPDATA/**" },
         { "path": "$APPDATA/firewhale" },
-        { "path": "$APPDATA/firewhale/**" }
+        { "path": "$APPDATA/firewhale/**" },
+        { "path": "/Users/rlee/workspaces/**" }
       ]
     },
     "fs:allow-exists",

@@ -15,6 +15,7 @@
     closeTab,
     collections,
     loadWorkspaceForConnection,
+    setCollections,
     setActiveTab,
     tabs,
     updateCollectionPath,
@@ -22,7 +23,8 @@
   } from "$lib/stores/workspace";
   import { normalizeCollectionPath } from "$lib/utils/state";
   import { parseQueryChain, validateQueryAst } from "$lib/query/parser";
-  import { runQueryAst } from "$lib/query/runner";
+  import { fetchCollectionsForConnection, runFirestoreQuery } from "$lib/query/firestore";
+  import type { ConnectionProfile } from "$lib/models";
 
   const { connectionId = null } = $props<{ connectionId?: string | null }>();
 
@@ -31,8 +33,13 @@
     { id: "console", label: "Query Console" }
   ] as const;
 
+  const DEFAULT_QUERY_LIMIT = 50;
+
   let bottomTab = $state<(typeof bottomTabs)[number]["id"]>("result");
   let workspaceLoading = $state(false);
+  let collectionsLoading = $state(false);
+  let collectionsError = $state("");
+  let lastCollectionsConnectionId = $state<string | null>(null);
   let createCollectionOpen = $state(false);
   let newCollectionPath = $state("");
   let collectionError = $state("");
@@ -49,6 +56,9 @@
     error?: string;
     warnings?: string[];
     durationMs?: number;
+    pageIndex: number;
+    pageSize: number;
+    hasNextPage: boolean;
   };
 
   type QueryLog = {
@@ -58,9 +68,17 @@
     timestamp: number;
   };
 
+  const emptyRunState: QueryRunState = {
+    status: "idle",
+    rows: [],
+    pageIndex: 0,
+    pageSize: 0,
+    hasNextPage: false
+  };
+
   const activeRunState = $derived.by<QueryRunState>(() => {
-    if (!$activeTab) return { status: "idle", rows: [] };
-    return runStates[$activeTab.id] ?? { status: "idle", rows: [] };
+    if (!$activeTab) return emptyRunState;
+    return runStates[$activeTab.id] ?? emptyRunState;
   });
 
   const activeRunLogs = $derived.by<QueryLog[]>(() => {
@@ -93,13 +111,21 @@
       workspaceLoading = false;
     });
 
+    const unsubscribeConnection = activeConnection.subscribe((connection) => {
+      if (!connection) return;
+      void refreshCollections(connection);
+    });
+
     void initConnections().then(async () => {
       if (connectionId) {
         await selectConnection(connectionId);
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      unsubscribeConnection();
+    };
   });
 
   $effect(() => {
@@ -117,14 +143,23 @@
     bottomTab = "result";
   }
 
+  function buildDefaultQuery(path: string): string {
+    const normalized = normalizeCollectionPath(path) || path;
+    return `db.collection('${normalized}')\n  .orderBy('id', 'asc')\n  .limit(${DEFAULT_QUERY_LIMIT})\n  .get()`;
+  }
+
   function handleQueryInput(event: Event): void {
     if (!$activeTab) return;
     const target = event.target as HTMLTextAreaElement;
     updateQueryText($activeTab.id, target.value);
   }
 
-  async function runQuery(): Promise<void> {
+  async function runQuery(pageIndex = 0): Promise<void> {
     if (!$activeTab) return;
+    if (!$activeConnection) {
+      setRunError($activeTab.id, "No active connection.");
+      return;
+    }
     const tabId = $activeTab.id;
     const queryText = $activeTab.queryText.trim();
 
@@ -132,7 +167,10 @@
       ...runStates,
       [tabId]: {
         status: "running",
-        rows: []
+        rows: [],
+        pageIndex,
+        pageSize: 0,
+        hasNextPage: false
       }
     };
     bottomTab = "result";
@@ -154,14 +192,26 @@
       updateCollectionPath(tabId, parsed.ast.collectionPath);
     }
 
-    const result = await runQueryAst(parsed.ast);
+    let result;
+    try {
+      result = await runFirestoreQuery($activeConnection, parsed.ast, { pageIndex });
+    } catch (error) {
+      setRunError(
+        tabId,
+        error instanceof Error ? error.message : "Failed to run query."
+      );
+      return;
+    }
     runStates = {
       ...runStates,
       [tabId]: {
         status: "success",
         rows: result.rows,
         warnings: result.warnings,
-        durationMs: result.durationMs
+        durationMs: result.durationMs,
+        pageIndex: result.pageIndex,
+        pageSize: result.pageSize,
+        hasNextPage: result.hasNextPage
       }
     };
     if (result.warnings.length > 0) {
@@ -175,6 +225,50 @@
   function selectCollection(path: string): void {
     if (!$activeTab) return;
     updateCollectionPath($activeTab.id, path);
+    if (!$activeTab.queryText.trim()) {
+      updateQueryText(
+        $activeTab.id,
+        buildDefaultQuery(path)
+      );
+    }
+  }
+
+  function openCollectionTab(path: string): void {
+    if (!$activeConnectionId) return;
+    const created = addTab($activeConnectionId, path);
+    if (created) {
+      updateQueryText(created.id, buildDefaultQuery(path));
+    }
+    bottomTab = "result";
+  }
+
+  function runPreviousPage(): void {
+    if (activeRunState.status !== "success") return;
+    if (activeRunState.pageIndex <= 0) return;
+    void runQuery(activeRunState.pageIndex - 1);
+  }
+
+  function runNextPage(): void {
+    if (activeRunState.status !== "success") return;
+    if (!activeRunState.hasNextPage) return;
+    void runQuery(activeRunState.pageIndex + 1);
+  }
+
+  async function refreshCollections(connection: ConnectionProfile): Promise<void> {
+    if (collectionsLoading) return;
+    if (lastCollectionsConnectionId === connection.id && !collectionsError) return;
+    collectionsLoading = true;
+    collectionsError = "";
+    try {
+      const list = await fetchCollectionsForConnection(connection);
+      setCollections(list, { merge: true });
+      lastCollectionsConnectionId = connection.id;
+    } catch (error) {
+      collectionsError =
+        error instanceof Error ? error.message : "Failed to load collections.";
+    } finally {
+      collectionsLoading = false;
+    }
   }
 
   function openCreateCollection(): void {
@@ -204,7 +298,7 @@
     newCollectionPath = "";
     collectionError = "";
     if ($activeTab) {
-      updateCollectionPath($activeTab.id, normalized);
+      selectCollection(normalized);
     }
   }
 
@@ -215,12 +309,16 @@
   }
 
   function setRunError(tabId: string, message: string): void {
+    const previous = runStates[tabId];
     runStates = {
       ...runStates,
       [tabId]: {
         status: "error",
         rows: [],
-        error: message
+        error: message,
+        pageIndex: previous?.pageIndex ?? 0,
+        pageSize: previous?.pageSize ?? 0,
+        hasNextPage: previous?.hasNextPage ?? false
       }
     };
     pushLog(tabId, "error", message);
@@ -273,10 +371,19 @@
       <div class="collections-body">
         <div class="section-title">Collections</div>
         <div class="collection-scroll">
-          {#if $collections.length === 0}
+          {#if collectionsLoading}
             <div class="collections-empty">
-              <p>No collections loaded yet.</p>
-              <p class="muted">They will appear once Firestore sync is wired.</p>
+              <p>Loading collections...</p>
+            </div>
+          {:else if collectionsError}
+            <div class="collections-empty">
+              <p>Failed to load collections.</p>
+              <p class="muted">{collectionsError}</p>
+            </div>
+          {:else if $collections.length === 0}
+            <div class="collections-empty">
+              <p>No collections found.</p>
+              <p class="muted">Create one or check your credentials.</p>
             </div>
           {:else}
             <div class="collection-table">
@@ -291,6 +398,7 @@
                       $activeTab?.collectionPath === collection ? "active" : ""
                     }`}
                     onclick={() => selectCollection(collection)}
+                    ondblclick={() => openCollectionTab(collection)}
                   >
                     <span class="collection-index">{index + 1}</span>
                     <span class="collection-name">{collection}</span>
@@ -342,7 +450,7 @@
           <button
             class="primary run-button"
             type="button"
-            onclick={runQuery}
+            onclick={() => runQuery()}
             disabled={!$activeTab || activeRunState.status === "running"}
           >
             {activeRunState.status === "running" ? "Running..." : "Run"}
@@ -382,6 +490,9 @@
           value={$activeTab?.queryText ?? ""}
           oninput={handleQueryInput}
           placeholder="db.collection('users')&#10;  .where('age', '>', 18)&#10;  .where('status', '==', 'active')&#10;  .orderBy('createdAt', 'desc')&#10;  .limit(50)&#10;  .get()"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck={false}
           disabled={!$activeTab}
         ></textarea>
       </section>
@@ -435,6 +546,27 @@
                       {/each}
                     </tbody>
                   </table>
+                </div>
+                <div class="result-pagination">
+                  <button
+                    class="ghost"
+                    type="button"
+                    onclick={runPreviousPage}
+                    disabled={activeRunState.pageIndex <= 0 || activeRunState.status !== "success"}
+                  >
+                    Previous
+                  </button>
+                  <div class="page-indicator">
+                    Page {activeRunState.pageIndex + 1}
+                  </div>
+                  <button
+                    class="ghost"
+                    type="button"
+                    onclick={runNextPage}
+                    disabled={!activeRunState.hasNextPage || activeRunState.status !== "success"}
+                  >
+                    Next
+                  </button>
                 </div>
               {/if}
             {:else}
@@ -635,6 +767,7 @@
     gap: 16px;
     padding: 24px;
     min-height: 0;
+    min-width: 0;
   }
 
   .workspace-header {
@@ -733,6 +866,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
   }
 
   .panel-header {
@@ -787,6 +921,7 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
+    min-width: 0;
   }
 
   .panel-card {
@@ -810,15 +945,33 @@
     margin-bottom: 8px;
   }
 
+  .result-pagination {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .page-indicator {
+    font-size: 0.8rem;
+    color: rgba(29, 26, 22, 0.6);
+  }
+
   .result-table-wrap {
+    width: 100%;
     border-radius: 12px;
     border: 1px solid rgba(29, 26, 22, 0.12);
     background: rgba(255, 255, 255, 0.9);
     overflow: auto;
+    max-height: clamp(220px, 40vh, 420px);
+    max-width: 100%;
+    min-width: 0;
   }
 
   .result-table {
-    width: 100%;
+    width: max-content;
+    min-width: 100%;
     border-collapse: collapse;
     font-size: 0.8rem;
   }

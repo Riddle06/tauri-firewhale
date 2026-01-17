@@ -5,8 +5,7 @@ import {
   createTabState,
   createWorkspaceState,
   deriveTabTitle,
-  normalizeCollectionPath,
-  DEFAULT_COLLECTIONS
+  normalizeCollectionPath
 } from "$lib/utils/state";
 
 const workspace = writable<WorkspaceState | null>(null);
@@ -40,9 +39,8 @@ function mergeCollections(base: string[], extra: string[]): string[] {
 
 function buildCollections(current: WorkspaceState): string[] {
   const base = normalizeCollectionList(current.collections);
-  const seed = base.length > 0 ? base : normalizeCollectionList(DEFAULT_COLLECTIONS);
   const fromTabs = normalizeCollectionList(current.tabs.map((tab) => tab.collectionPath));
-  return mergeCollections(seed, fromTabs);
+  return mergeCollections(base, fromTabs);
 }
 
 function collectionsEqual(left: string[] | undefined, right: string[]): boolean {
@@ -198,6 +196,22 @@ export function addCollection(path: string): boolean {
   });
   if (added) schedulePersist();
   return added;
+}
+
+export function setCollections(
+  list: string[],
+  options: { merge?: boolean } = {}
+): void {
+  workspace.update((current) => {
+    if (!current) return current;
+    const normalized = normalizeCollectionList(list);
+    const nextCollections = options.merge
+      ? mergeCollections(normalizeCollectionList(current.collections), normalized)
+      : normalized;
+    if (collectionsEqual(current.collections, nextCollections)) return current;
+    return { ...current, collections: nextCollections };
+  });
+  schedulePersist();
 }
 
 export { workspace, activeTab, tabs, collections };
