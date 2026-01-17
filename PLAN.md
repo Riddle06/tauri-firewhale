@@ -21,18 +21,18 @@
 A. App Shell（最外層）
 	•	左上：Connection selector（可同時開多個）
 	•	上方：Tabs bar（+ 新增、切換、關閉）
-	•	中間：Editor + Result grid
-	•	右側/下方：Query console（log / errors / warnings）
+	•	中間：Editor 
+	•	下方：Results and Query console（log / errors / warnings）
 
 B. New Tab（按 +）
 	•	選 connection（若只有一個，跳過）
-	•	輸入 collection path（帶本地歷史 suggestion）
-	•	Enter → 開新 tab，title = path 最後一段 + connection badge
+	•	輸入 collection path（在 collection('<collection>') 位置帶本地歷史 suggestion）
+
 
 C. Query Editor
-	•	DSL（建議 SQL-ish 但簡單）
+	•	Firestore SDK chain 語法（db.collection(...).where(...).orderBy(...).limit(...).get()）
 	•	即時 lint（語法錯、欄位不存在疑似）
-	•	suggestion：keywords / operators / fields / 常用片段
+	•	suggestion：collection / fields / operators / 常用片段
 	•	Run（快捷鍵 Cmd/Ctrl+Enter）
 
 D. 缺 Index 流程（關鍵 UX）
@@ -50,7 +50,7 @@ E. 記憶/恢復
 
 ⸻
 
-2) 技術架構（清楚分層，避免後面很難改）
+1) 技術架構（清楚分層，避免後面很難改）
 
 Process/Runtime 分工
 	•	Svelte (UI)：渲染、互動、editor、tabs、result grid
@@ -62,7 +62,7 @@ Process/Runtime 分工
 核心模組
 	1.	Connection Manager（profiles、credentials、切換）
 	2.	Workspace/Tab Manager（多 tabs、多 connections、persist）
-	3.	Query Language（DSL）+ Parser（AST）
+	3.	Query Language（Firestore chain DSL）+ Parser（AST）
 	4.	Completion Engine（超快 suggestion）
 	5.	Query Runner（Firestore 執行、錯誤分類、fallback）
 	6.	Result Grid（顯示、欄寬、欄位選取、copy、export optional）
@@ -132,21 +132,23 @@ type FieldStats = {
 
 ⸻
 
-4) Query DSL 規格（先鎖定 MVP 範圍）
+4) Query 語法（Firestore chain，先鎖定 MVP 範圍）
 
 建議先支持這些（夠用、好做 suggestion）：
-	•	from <collectionPath>
-	•	where <field> <op> <value>（支援 ==, !=, <, <=, >, >=, in, array-contains, array-contains-any）
-	•	orderBy <field> [asc|desc]
-	•	limit <n>
+	•	db.collection('<collection>')
+	•	.where('<field>', '<op>', <value>)（支援 ==, !=, <, <=, >, >=, in, array-contains, array-contains-any）
+	•	.orderBy('<field>', 'asc'|'desc')
+	•	.limit(<n>)
+	•	.get()
 
 例：
 
-from users
-where status == "active"
-where age >= 18
-orderBy createdAt desc
-limit 50
+db.collection('users')
+  .where('age', '>', 18)
+  .where('status', '==', 'active')
+  .orderBy('createdAt', 'desc')
+  .limit(50)
+  .get()
 
 Parser 產出 AST：
 
@@ -155,6 +157,7 @@ type QueryAST = {
   where: { field: string; op: string; value: any }[];
   orderBy: { field: string; dir: "asc"|"desc" }[];
   limit?: number;
+  get: boolean;
 };
 
 
@@ -166,6 +169,8 @@ Completion 來源分三層（快到慢）
 	1.	Static：keywords / operators / snippets（O(1)）
 	2.	Cached Schema：FieldStats fields（讀本地 cache）
 	3.	Dynamic（可選）：top values（節流 + 可取消）
+	•	collection('<collection>')：本地歷史或已知 collection list
+	•	where('<field>') / orderBy('<field>')：FieldStats fields
 
 性能策略（必做）
 	•	增量解析：輸入變化只更新最小 AST/Token 狀態
@@ -241,11 +246,11 @@ Milestone 1：App Skeleton + Tabs（先把 5、6、7 打通）
 
 ⸻
 
-Milestone 2：Query DSL + 基本執行（能查到資料）
+Milestone 2：Query Chain + 基本執行（能查到資料）
 
 目標
-	•	DSL parse → AST
-	•	AST → Firestore SDK query（where/orderBy/limit）
+	•	Query chain parse → AST
+	•	AST → Firestore SDK query（collection/where/orderBy/limit/get）
 	•	顯示結果表格（最少 key/value viewer）
 
 交付物
@@ -254,7 +259,7 @@ Milestone 2：Query DSL + 基本執行（能查到資料）
 	•	Result grid（先簡單，後面再強化）
 
 驗收
-	•	能對指定 collection 跑 where/orderBy/limit 並顯示結果
+	•	能對指定 collection 跑 collection/where/orderBy/limit/get 並顯示結果
 	•	無效語法會在 UI 顯示錯誤（lint）
 
 ⸻
@@ -263,8 +268,8 @@ Milestone 3：Suggestion（做到“像 IDE”）
 
 目標
 	•	keywords/operators/snippets suggestion
-	•	fields suggestion（FieldStats）
-	•	collection path 本地歷史 suggestion
+	•	collection suggestion（collection('<collection>')）
+	•	fields suggestion（where/orderBy）
 
 交付物
 	•	Completion engine v1
@@ -272,7 +277,8 @@ Milestone 3：Suggestion（做到“像 IDE”）
 	•	Editor 換成 Monaco 或 CodeMirror 6（建議此時換）
 
 驗收
-	•	輸入 where  立刻提示欄位
+	•	輸入 collection('<collection>') 立刻提示 collections
+	•	輸入 where/orderBy 立刻提示欄位
 	•	提示延遲肉眼感受接近即時（不會卡字）
 	•	同 collection 用越久提示越準
 
@@ -336,7 +342,7 @@ Milestone 6：打磨與效率（讓它“像 Firefoo”）
 10) Done Definition（最後你怎麼判定做完）
 
 你列的 7 點對應可驗收條件：
-	1.	✅ 輸入 query 有 suggestion（keywords + fields）
+	1.	✅ 輸入 query 有 suggestion（keywords + collection + fields）
 	2.	✅ suggestion 體感即時（不卡字、不排隊）
 	3.	✅ 缺 index 時：提示 + fallback confirm + client sort 執行
 	4.	✅ connection 可儲存/重用（含安全儲存）

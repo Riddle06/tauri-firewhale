@@ -10,7 +10,7 @@
 A. Unit tests（快、每天跑、最重要）
 
 範圍
-	•	DSL parser（queryText → AST）
+	•	Query parser（Firestore chain，queryText → AST）
 	•	AST validator（語法/型別/規則）
 	•	completion engine（給定游標位置 → suggestions）
 	•	error classifier（missing index / permission / invalid argument）
@@ -27,7 +27,7 @@ B. Integration tests（模組串接，仍然要快）
 
 範圍
 	•	Query runner + Firestore emulator：
-	•	where/orderBy/limit 能跑
+	•	db.collection().where().orderBy().limit().get() 能跑
 	•	pagination / cursor（若你後面做）
 	•	缺 index 流程：能捕捉錯誤 → 產出 fallback plan（至少測到 “顯示 fallback 選項”）
 	•	Storage layer：
@@ -43,7 +43,7 @@ B. Integration tests（模組串接，仍然要快）
 C. E2E tests（最慢，但能防「真的壞了」）
 
 範圍
-	•	App 啟動 → 建立 connection（指 emulator）→ 開 tab → 輸入 query → Run → 看到結果
+	•	App 啟動 → 建立 connection（指 emulator）→ 開 tab → 輸入 query（Firestore chain）→ Run → 看到結果
 	•	Tab 行為：+ 新增/切換/關閉
 	•	Persist：關閉 app → 重新開啟 → tabs & queries 還在
 	•	Missing index UX：觸發錯誤 → 看到 fallback 卡片 → confirm → 出結果（若 emulator 不易重現 index 行為，可用 mock error 注入）
@@ -103,12 +103,13 @@ GitHub 設定：
 
 這些是你最該優先寫的測試（會保護核心價值）：
 
-Parser / DSL
-	•	正常 query 可 parse 成正確 AST
+Parser / Query chain
+	•	正常 query（Firestore chain）可 parse 成正確 AST
 	•	多個 where、orderBy、limit 的組合
 	•	錯誤訊息定位（行/列 or token）
 
 Completion
+	•	在 collection 位置能提示 collections
 	•	在 where  位置能提示 fields
 	•	在 operator 位置提示合法 operators
 	•	在 orderBy  位置提示 fields
@@ -136,8 +137,8 @@ Milestone 1（Tabs + Persist + Connections）
 	•	✅ Integration：storage 寫入/讀取 round-trip
 	•	CI gate：lint + unit 必過
 
-Milestone 2（DSL + Query runner）
-	•	✅ Unit：parser + validator
+Milestone 2（Query chain + Query runner）
+	•	✅ Unit：parser + validator（Firestore chain）
 	•	✅ Integration：emulator 跑基本查詢
 	•	CI gate：加 integration 必過
 
