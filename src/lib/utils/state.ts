@@ -38,6 +38,7 @@ export function createWorkspaceState(connectionId: string): WorkspaceState {
     openConnectionIds: [connectionId],
     tabs: [firstTab],
     activeTabId: firstTab.id,
-    collections: []
+    collections: [],
+    fieldStats: {}
   };
 }

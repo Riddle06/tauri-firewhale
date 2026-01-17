@@ -14,7 +14,9 @@
     addCollection,
     closeTab,
     collections,
+    fieldStats,
     loadWorkspaceForConnection,
+    recordFieldStats,
     setCollections,
     setActiveTab,
     tabs,
@@ -25,6 +27,7 @@
   import { parseQueryChain, validateQueryAst } from "$lib/query/parser";
   import { fetchCollectionsForConnection, runFirestoreQuery } from "$lib/query/firestore";
   import type { ConnectionProfile } from "$lib/models";
+  import QueryEditor from "$lib/components/QueryEditor.svelte";
 
   const { connectionId = null } = $props<{ connectionId?: string | null }>();
 
@@ -148,10 +151,9 @@
     return `db.collection('${normalized}')\n  .orderBy('id', 'asc')\n  .limit(${DEFAULT_QUERY_LIMIT})\n  .get()`;
   }
 
-  function handleQueryInput(event: Event): void {
+  function handleQueryInput(nextValue: string): void {
     if (!$activeTab) return;
-    const target = event.target as HTMLTextAreaElement;
-    updateQueryText($activeTab.id, target.value);
+    updateQueryText($activeTab.id, nextValue);
   }
 
   async function runQuery(pageIndex = 0): Promise<void> {
@@ -214,6 +216,9 @@
         hasNextPage: result.hasNextPage
       }
     };
+    if (result.rows.length > 0) {
+      recordFieldStats(parsed.ast.collectionPath, result.rows);
+    }
     if (result.warnings.length > 0) {
       for (const warning of result.warnings) {
         pushLog(tabId, "info", warning);
@@ -485,16 +490,17 @@
             {$activeTab?.collectionPath || "Select a collection"}
           </span>
         </div>
-        <textarea
-          class="editor"
-          value={$activeTab?.queryText ?? ""}
-          oninput={handleQueryInput}
-          placeholder="db.collection('users')&#10;  .where('age', '>', 18)&#10;  .where('status', '==', 'active')&#10;  .orderBy('createdAt', 'desc')&#10;  .limit(50)&#10;  .get()"
-          autocapitalize="off"
-          autocorrect="off"
-          spellcheck={false}
-          disabled={!$activeTab}
-        ></textarea>
+        {#if $activeTab}
+          <QueryEditor
+            value={$activeTab.queryText}
+            collections={$collections}
+            fieldStats={$fieldStats}
+            collectionPath={$activeTab.collectionPath}
+            onChange={handleQueryInput}
+          />
+        {:else}
+          <div class="editor editor-empty">Select a collection to begin.</div>
+        {/if}
       </section>
 
       <section class="bottom-panel">
@@ -886,12 +892,39 @@
   .editor {
     flex: 1;
     border-radius: 14px;
-    border: 1px solid rgba(29, 26, 22, 0.15);
-    padding: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #1e1e1e;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .editor :global(.cm-editor) {
+    height: 100%;
+  }
+
+  .editor :global(.cm-scroller) {
     font-family: "IBM Plex Mono", "Fira Mono", monospace;
     font-size: 0.9rem;
-    background: rgba(255, 255, 255, 0.9);
-    resize: none;
+  }
+
+  .editor :global(.cm-content) {
+    padding: 12px;
+  }
+
+  .editor :global(.cm-gutters) {
+    display: none;
+  }
+
+  .editor :global(.cm-placeholder) {
+    color: rgba(255, 255, 255, 0.45);
+  }
+
+  .editor-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.85rem;
   }
 
   .bottom-panel {

@@ -15,6 +15,10 @@ const activeTab = derived(workspace, ($workspace) => {
 });
 const tabs = derived(workspace, ($workspace) => $workspace?.tabs ?? []);
 const collections = derived(workspace, ($workspace) => $workspace?.collections ?? []);
+const fieldStats = derived(
+  workspace,
+  ($workspace) => $workspace?.fieldStats ?? {}
+);
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingWorkspace: WorkspaceState | null = null;
@@ -92,7 +96,11 @@ export async function loadWorkspaceForConnection(
   const stored = await loadWorkspace(connectionId);
   const nextWorkspace = stored ?? createWorkspaceState(connectionId);
   const nextCollections = buildCollections(nextWorkspace);
-  const hydratedWorkspace = { ...nextWorkspace, collections: nextCollections };
+  const hydratedWorkspace = {
+    ...nextWorkspace,
+    collections: nextCollections,
+    fieldStats: nextWorkspace.fieldStats ?? {}
+  };
   workspace.set(hydratedWorkspace);
   if (!stored || !collectionsEqual(nextWorkspace.collections, nextCollections)) {
     await saveWorkspace(connectionId, hydratedWorkspace);
@@ -214,4 +222,39 @@ export function setCollections(
   schedulePersist();
 }
 
-export { workspace, activeTab, tabs, collections };
+function mergeFieldStats(
+  existing: Record<string, number>,
+  rows: Record<string, unknown>[]
+): Record<string, number> {
+  const next = { ...existing };
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      next[key] = (next[key] ?? 0) + 1;
+    }
+  }
+  return next;
+}
+
+export function recordFieldStats(
+  collectionPath: string,
+  rows: Record<string, unknown>[]
+): void {
+  const normalized = normalizeCollectionPath(collectionPath);
+  if (!normalized || rows.length === 0) return;
+  workspace.update((current) => {
+    if (!current) return current;
+    const stats = current.fieldStats ?? {};
+    const currentStats = stats[normalized] ?? {};
+    const nextStats = mergeFieldStats(currentStats, rows);
+    return {
+      ...current,
+      fieldStats: {
+        ...stats,
+        [normalized]: nextStats
+      }
+    };
+  });
+  schedulePersist();
+}
+
+export { workspace, activeTab, tabs, collections, fieldStats };

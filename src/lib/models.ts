@@ -35,6 +35,7 @@ export type WorkspaceState = {
   tabs: TabState[];
   activeTabId: string | null;
   collections?: string[];
+  fieldStats?: Record<string, Record<string, number>>;
 };
 
 export type AppState = {

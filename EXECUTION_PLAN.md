@@ -67,7 +67,7 @@
 ---
 
 ## Milestone 1.2：Tweak UX details
-狀態：IN_PROGRESS
+狀態：DONE
 
 目標
 - 程式啟動時, 會有一個主視窗可以先選擇之前儲存或是新增 Connection 的列表, 選擇後會出現一個新視窗, 新視窗 title 會叫做 (<connection_name> - Firewhale)
@@ -122,7 +122,7 @@
 ---
 
 ## Milestone 2：Query Chain + 基本執行
-狀態：IN_PROGRESS
+狀態：DONE
 
 目標
 - Firestore chain parse 成 AST，能執行基本查詢並顯示結果
@@ -151,26 +151,26 @@
 ---
 
 ## Milestone 3：Suggestion（像 IDE）
-狀態：TODO
+狀態：IN_PROGRESS
 
 目標
 - 即時 suggestion（keywords + collection + fields），體感不卡
 
 交付物
-- [ ] Completion engine v1（static + cached fields）
-- [ ] FieldStats 初版（從 query results 增量學習）
-- [ ] Editor 換成 CodeMirror 6 或 Monaco
+- [x] Completion engine v1（static + cached fields）
+- [x] FieldStats 初版（從 query results 增量學習）
+- [x] Editor 換成 CodeMirror 6 或 Monaco
 
 任務
-- [ ] Trie / hashmap 結構做 keywords/operators/snippets
-- [ ] collection('<collection>') 位置的本地歷史 suggestion
-- [ ] FieldStats cache（per-connection / per-collection）
+- [x] Trie / hashmap 結構做 keywords/operators/snippets
+- [x] collection('<collection>') 位置的本地歷史 suggestion
+- [x] FieldStats cache（per-connection / per-collection）
 - [ ] IPC + abort 支援（避免輸入排隊）
 
 驗收條件
-- [ ] 在 collection('<collection>') 位置能提示 collections
-- [ ] 在 where/orderBy 位置能提示 fields
-- [ ] 提示延遲接近即時，不卡字
+- [x] 在 collection('<collection>') 位置能提示 collections
+- [x] 在 where/orderBy 位置能提示 fields
+- [x] 提示延遲接近即時，不卡字
 
 測試門檻
 - [ ] Unit：completion（keywords + fields）

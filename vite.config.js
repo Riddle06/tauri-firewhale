@@ -7,6 +7,14 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
+  resolve: {
+    dedupe: [
+      "@codemirror/state",
+      "@codemirror/view",
+      "@codemirror/language",
+      "@codemirror/autocomplete"
+    ]
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
