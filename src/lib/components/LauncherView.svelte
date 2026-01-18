@@ -366,7 +366,9 @@
     width: 44px;
     height: 44px;
     border-radius: 16px;
-    background: linear-gradient(135deg, #ff6b35, #f6b042);
+    background:
+      url("/brand-icon.png") center / 70% no-repeat,
+      linear-gradient(135deg, #ff6b35, #f6b042);
     box-shadow: 0 10px 20px rgba(255, 107, 53, 0.25);
   }
 
