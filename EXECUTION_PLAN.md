@@ -151,7 +151,7 @@
 ---
 
 ## Milestone 3：Suggestion（像 IDE）
-狀態：IN_PROGRESS
+狀態：DONE
 
 目標
 - 即時 suggestion（keywords + collection + fields），體感不卡
@@ -173,8 +173,8 @@
 - [x] 提示延遲接近即時，不卡字
 
 測試門檻
-- [ ] Unit：completion（keywords + fields）
-- [ ] Integration：FieldStats 增量更新
+- [x] Unit：completion（keywords + fields）
+- [x] Integration：FieldStats 增量更新
 
 ---
 

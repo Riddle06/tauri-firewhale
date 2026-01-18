@@ -7,22 +7,26 @@
     snippetCompletion,
     type Completion,
     type CompletionContext,
-    type CompletionResult
+    type CompletionResult,
   } from "@codemirror/autocomplete";
   import { vscodeDark } from "@uiw/codemirror-theme-vscode";
   import { javascript } from "@codemirror/lang-javascript";
-  import { normalizeCollectionPath } from "$lib/utils/state";
-
-  type FieldStatsMap = Record<string, Record<string, number>>;
+  import { createCompletionClient } from "$lib/completion/ipc";
+  import type {
+    CompletionOptionData,
+    CompletionRequest,
+    CompletionResultData,
+    FieldStatsMap
+  } from "$lib/completion/types";
 
   const {
     value = "",
-    collections = [],
-    fieldStats = {},
+    collections = [] as string[],
+    fieldStats = {} as FieldStatsMap,
     collectionPath = "",
     onChange = () => {},
     onFormat = () => {},
-    onRun = () => {}
+    onRun = () => {},
   } = $props<{
     value?: string;
     collections?: string[];
@@ -36,63 +40,8 @@
   let editorRoot: HTMLDivElement | null = null;
   let view: EditorView | null = null;
   let isUpdating = false;
-
-  const baseCompletions: Completion[] = [
-    { label: "db", type: "variable" },
-    { label: "collection", type: "function" },
-    { label: "where", type: "function" },
-    { label: "orderBy", type: "function" },
-    { label: "limit", type: "function" },
-    { label: "get", type: "function" },
-    { label: "asc", type: "constant" },
-    { label: "desc", type: "constant" },
-    snippetCompletion("db.collection('${collection}')", {
-      label: "collection chain",
-      detail: "collection()"
-    }),
-    snippetCompletion(".where('${field}', '==', ${value})", {
-      label: "where",
-      detail: "where()"
-    }),
-    snippetCompletion(".orderBy('${field}', 'asc')", {
-      label: "orderBy",
-      detail: "orderBy()"
-    }),
-    snippetCompletion(".limit(50)", {
-      label: "limit",
-      detail: "limit()"
-    }),
-    snippetCompletion(".get()", {
-      label: "get",
-      detail: "get()"
-    })
-  ];
-
-  const dbMemberCompletions: Completion[] = [
-    snippetCompletion("collection('${collection}')", {
-      label: "collection",
-      detail: "collection()"
-    })
-  ];
-
-  const chainMemberCompletions: Completion[] = [
-    snippetCompletion("where('${field}', '==', ${value})", {
-      label: "where",
-      detail: "where()"
-    }),
-    snippetCompletion("orderBy('${field}', 'asc')", {
-      label: "orderBy",
-      detail: "orderBy()"
-    }),
-    snippetCompletion("limit(50)", {
-      label: "limit",
-      detail: "limit()"
-    }),
-    snippetCompletion("get()", {
-      label: "get",
-      detail: "get()"
-    })
-  ];
+  let completionClient: ReturnType<typeof createCompletionClient> | null = null;
+  let activeCompletionAbort: AbortController | null = null;
 
   const editorKeymap = keymap.of([
     {
@@ -100,164 +49,93 @@
       run: (view) => {
         view.dispatch(view.state.replaceSelection("  "));
         return true;
-      }
+      },
     },
     {
       key: "Mod-Shift-f",
       run: () => {
         onFormat();
         return true;
-      }
+      },
     },
     {
       key: "Shift-Alt-f",
       run: () => {
         onFormat();
         return true;
-      }
+      },
     },
     {
       key: "Mod-Enter",
       run: () => {
         onRun();
         return true;
-      }
-    }
+      },
+    },
   ]);
 
-  function resolveCollectionFromText(text: string): string {
-    const match = /\bcollection\s*\(\s*['"]([^'"]+)['"]/.exec(text);
-    if (match?.[1]) return normalizeCollectionPath(match[1]);
-    return normalizeCollectionPath(collectionPath);
-  }
-
-  function isInsideString(text: string): boolean {
-    let inString: "'" | "\"" | null = null;
-    let escaped = false;
-
-    for (let i = 0; i < text.length; i += 1) {
-      const char = text[i];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (char === "\\") {
-          escaped = true;
-          continue;
-        }
-        if (char === inString) {
-          inString = null;
-        }
-        continue;
+  function mapCompletionOptions(options: CompletionOptionData[]): Completion[] {
+    return options.map((option) => {
+      if (option.snippet) {
+        return snippetCompletion(option.snippet, {
+          label: option.label,
+          detail: option.detail,
+          type: option.type,
+        });
       }
-      if (char === "'" || char === "\"") {
-        inString = char;
-      }
-    }
-
-    return inString !== null;
-  }
-
-  function dotCompletion(context: CompletionContext): CompletionResult | null {
-    const before = context.state.sliceDoc(0, context.pos);
-    const match = /\.(\w*)$/.exec(before);
-    if (!match) return null;
-    const beforeDot = before.slice(0, match.index);
-    if (isInsideString(beforeDot)) return null;
-
-    if (/\bdb\s*$/.test(beforeDot)) {
       return {
-        from: context.pos - match[1].length,
-        options: dbMemberCompletions,
-        validFor: /\w*/
+        label: option.label,
+        detail: option.detail,
+        type: option.type,
       };
-    }
-
-    if (/\bcollection\s*\(/.test(beforeDot)) {
-      return {
-        from: context.pos - match[1].length,
-        options: chainMemberCompletions,
-        validFor: /\w*/
-      };
-    }
-
-    return null;
+    });
   }
 
-  function buildCollectionOptions(): Completion[] {
-    const unique = Array.from(new Set(collections));
-    return unique.map((entry) => ({
-      label: entry,
-      type: "property"
-    }));
+  function mapCompletionResult(
+    result: CompletionResultData,
+  ): CompletionResult {
+    return {
+      from: result.from,
+      options: mapCompletionOptions(result.options),
+      validFor: result.validFor ? new RegExp(result.validFor) : undefined,
+    };
   }
 
-  function buildFieldOptions(activeCollection: string): Completion[] {
-    if (!activeCollection) return [];
-    const stats = fieldStats[activeCollection] ?? {};
-    const entries = Object.entries(stats).sort((a, b) => b[1] - a[1]);
-    return entries.map(([field]) => ({
-      label: field,
-      type: "property"
-    }));
-  }
-
-  function collectionCompletion(
+  function completionSource(
     context: CompletionContext,
-    before: string
-  ): CompletionResult | null {
-    const match = /\bcollection\s*\(\s*['"]([^'"]*)$/.exec(before);
-    if (!match) return null;
-    const from = context.pos - match[1].length;
-    return {
-      from,
-      options: buildCollectionOptions(),
-      validFor: /[\w/.-]*/
-    };
-  }
+  ): CompletionResult | null | Promise<CompletionResult | null> {
+    if (!completionClient) return null;
 
-  function fieldCompletion(
-    context: CompletionContext,
-    before: string
-  ): CompletionResult | null {
-    const match = /\b(where|orderBy)\s*\(\s*['"]([^'"]*)$/.exec(before);
-    if (!match) return null;
-    const from = context.pos - match[2].length;
-    const activeCollection = resolveCollectionFromText(before);
-    const options = buildFieldOptions(activeCollection);
-    if (options.length === 0) return null;
-    return {
-      from,
-      options,
-      validFor: /[\w.]*/
-    };
-  }
+    activeCompletionAbort?.abort();
+    const controller = new AbortController();
+    activeCompletionAbort = controller;
 
-  function keywordCompletion(context: CompletionContext): CompletionResult | null {
-    const word = context.matchBefore(/[\w.]+/);
-    if (!word || (word.from === word.to && !context.explicit)) {
-      return null;
-    }
-    return {
-      from: word.from,
-      options: baseCompletions,
-      validFor: /[\w.]*/
-    };
-  }
-
-  function completionSource(context: CompletionContext): CompletionResult | null {
-    const before = context.state.sliceDoc(0, context.pos);
-    return (
-      dotCompletion(context) ??
-      collectionCompletion(context, before) ??
-      fieldCompletion(context, before) ??
-      keywordCompletion(context)
+    context.addEventListener(
+      "abort",
+      () => controller.abort(),
+      { onDocChange: true },
     );
+
+    const request: CompletionRequest = {
+      doc: context.state.doc.toString(),
+      pos: context.pos,
+      explicit: context.explicit,
+      collections,
+      fieldStats,
+      collectionPath,
+    };
+
+    return completionClient
+      .request(request, controller.signal)
+      .then((result) => {
+        if (!result || controller.signal.aborted || context.aborted) return null;
+        return mapCompletionResult(result);
+      });
   }
 
   onMount(() => {
     if (!editorRoot) return;
+    completionClient = createCompletionClient();
     const state = EditorState.create({
       doc: value,
       extensions: [
@@ -271,11 +149,15 @@
           const nextValue = update.state.doc.toString();
           onChange(nextValue);
         }),
-        autocompletion({ override: [completionSource] })
-      ]
+        autocompletion({ override: [completionSource] }),
+      ],
     });
     view = new EditorView({ state, parent: editorRoot });
     return () => {
+      activeCompletionAbort?.abort();
+      activeCompletionAbort = null;
+      completionClient?.dispose();
+      completionClient = null;
       view?.destroy();
       view = null;
     };
@@ -287,7 +169,7 @@
     if (current === value) return;
     isUpdating = true;
     view.dispatch({
-      changes: { from: 0, to: current.length, insert: value }
+      changes: { from: 0, to: current.length, insert: value },
     });
     isUpdating = false;
   });
