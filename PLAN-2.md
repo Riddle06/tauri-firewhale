@@ -151,6 +151,11 @@ Milestone 3.1（Query Result 強化）
 	•	Integration：右鍵/雙擊開啟 viewer 並顯示正確 row
 	•	Manual：result header sticky + hover 狀態
 
+Milestone 3.2（Edit document）
+	•	✅ Unit：JSON editor 解析/格式化、invalid JSON 校驗、dirty state
+	•	Integration：更新 doc 後結果列資料更新（emulator 或 mock）
+	•	Manual：Edit 視窗語法高亮、Save/Cancel 行為
+
 Milestone 4（Missing index fallback）
 	•	✅ Unit：error classifier + fallback plan builder
 	•	✅ Integration/Mock：runner 接到 missing index → UI state 進入 fallback 模式

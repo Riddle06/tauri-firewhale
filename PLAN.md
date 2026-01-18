@@ -303,6 +303,27 @@ Milestone 3.1：Query Result 強化（互動與可讀性）
 
 ⸻
 
+Milestone 3.2：Query Result 強化（Edit Document）
+
+目標
+	•	右鍵結果列可編輯文件並保存回 Firestore
+	•	編輯視窗有 JSON 語法高亮與 Save/Cancel
+
+交付物
+	•	Edit document 右鍵選單
+	•	Edit Document 視窗（可編輯 JSON + highlight）
+	•	Save/Cancel + JSON 校驗 + 錯誤提示
+	•	Save 後更新結果列資料
+
+驗收
+	•	右鍵 row 有 Edit document，點擊會開視窗
+	•	顯示格式化 JSON 並有高亮
+	•	Cancel 不變更資料且關窗
+	•	JSON 無效時不可 Save 並有提示
+	•	Save 成功後結果列立即更新
+
+⸻
+
 Milestone 4：Missing Index Fallback（你差異化的亮點）
 
 目標

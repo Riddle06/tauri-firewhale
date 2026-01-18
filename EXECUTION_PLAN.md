@@ -178,7 +178,7 @@
 - ---
 
 ## Milestone 3.1： 強化 Query Result 的功能
-狀態：IN_PROGRESS
+狀態：DONE
 
 目標
 - Collection List 跟 Query Result List 需要有 hover 的效果
@@ -212,6 +212,47 @@
 - [x] Unit：JSON viewer formatter（縮排/穩定輸出）
 - [x] Integration：右鍵/雙擊開啟 viewer 並顯示正確 row
 - [x] Manual：結果表格捲動時 header 不消失
+
+---
+
+## Milestone 3.2： 強化 Query Result 的功能 (edit document)
+狀態：TODO
+
+目標
+- Query Result 的 row 點擊右鍵多了一個功能 Edit document
+  - 點擊了之後會有一個視窗出來, 會是該 doc 的內容
+  - 該 document 要有 JSON colorful highlight
+  - Edit Window 的最下方會有 save 跟 cancel 的 button
+   -  Save 代表儲存該 doc 並關閉視窗, 且 Query Result 的該列需要更新
+   -  Cancel 代表取消操作 並關閉視窗
+  - 儲存時請注意日期型別的部分, 不要存成字串, 應該要存成 firestore 的 Timestamp
+
+交付物
+- [ ] Query result row 右鍵選單新增 Edit document
+- [ ] Edit Document 視窗（可編輯 JSON + colorful highlight）
+- [ ] Save / Cancel 操作（含 JSON 校驗與錯誤提示）
+- [ ] Save 後更新 Firestore doc 並同步更新結果列
+
+任務
+- [ ] 定義 Edit document 互動流程（開啟/關閉/dirty state/錯誤狀態）
+- [ ] UI：新增 Edit document 右鍵選項與開窗
+- [ ] JSON 編輯器：載入 doc、可編輯、保留語法高亮
+- [ ] JSON parse/validation，無效時禁止 Save 並顯示錯誤
+- [ ] Save：呼叫更新 API（Firestore）+ 更新結果列資料
+- [ ] Cancel：丟棄修改並關閉視窗
+
+驗收條件
+- [ ] 右鍵 row 有 Edit document，點擊後開啟編輯視窗
+- [ ] 視窗內顯示該 doc 的格式化 JSON，且有語法高亮
+- [ ] Cancel 會關閉視窗且不更動結果列
+- [ ] JSON 無效時 Save disabled 並顯示提示
+- [ ] Save 成功後關閉視窗，結果列資料即時更新（不需重新查詢）
+- [ ] Save 失敗時顯示錯誤且保留編輯內容
+
+測試門檻
+- [ ] Unit：JSON 編輯輸入/輸出格式化、invalid JSON 校驗、dirty state 判斷
+- [ ] Integration：更新 doc 後結果列資料更新（emulator 或 mock）
+- [ ] Manual：視窗開啟/關閉、語法高亮、Save/Cancel 行為
 
 ---
 
