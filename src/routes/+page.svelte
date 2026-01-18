@@ -3,6 +3,7 @@
   import LauncherView from "$lib/components/LauncherView.svelte";
   import WorkspaceView from "$lib/components/WorkspaceView.svelte";
   import DocumentView from "$lib/components/DocumentView.svelte";
+  import DocumentEditView from "$lib/components/DocumentEditView.svelte";
 
   const view = $derived.by(() => $page.url.searchParams.get("view") ?? "launcher");
   const connectionId = $derived.by(() => $page.url.searchParams.get("connectionId"));
@@ -13,6 +14,12 @@
 
 {#if view === "document"}
   <DocumentView
+    collectionPath={collectionPath}
+    documentId={documentId}
+    payload={payload}
+  />
+{:else if view === "document-edit"}
+  <DocumentEditView
     collectionPath={collectionPath}
     documentId={documentId}
     payload={payload}

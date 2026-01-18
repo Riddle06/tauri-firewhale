@@ -86,6 +86,27 @@
     title: string;
   };
 
+  type DocumentEditPayload = {
+    row: Record<string, unknown>;
+    collectionPath: string;
+    id: string;
+    title: string;
+    tabId: string;
+    connectionId: string;
+    idIsSynthetic?: boolean;
+  };
+
+  type DocumentWindowPayload =
+    | { event: "document:view"; payload: DocumentViewPayload }
+    | { event: "document:edit"; payload: DocumentEditPayload };
+
+  type DocumentUpdatedPayload = {
+    tabId: string;
+    collectionPath: string;
+    documentId: string;
+    row: Record<string, unknown>;
+  };
+
   type DocumentReadyPayload = {
     label: string;
   };
@@ -122,9 +143,10 @@
     return ["id", ...keys.filter((key) => key !== "id")];
   });
 
-  const documentPayloads = new SvelteMap<string, DocumentViewPayload>();
+  const documentPayloads = new SvelteMap<string, DocumentWindowPayload>();
 
   let documentReadyUnlisten: UnlistenFn | null = null;
+  let documentUpdateUnlisten: UnlistenFn | null = null;
 
   onMount(() => {
     let currentConnection: string | null = null;
@@ -162,12 +184,31 @@
           if (!label) return;
           const payload = documentPayloads.get(label);
           if (!payload) return;
-          void currentWindow.emitTo(label, "document:view", payload);
+          void currentWindow.emitTo(label, payload.event, payload.payload);
           documentPayloads.delete(label);
         })
         .then((cleanup) => {
           documentReadyUnlisten = cleanup;
         });
+
+      void currentWindow
+        .listen<DocumentUpdatedPayload>("document:updated", (event) => {
+          if (!event.payload) return;
+          handleDocumentUpdated(event.payload);
+        })
+        .then((cleanup) => {
+          documentUpdateUnlisten = cleanup;
+        });
+    }
+
+    let messageHandler: ((event: MessageEvent) => void) | null = null;
+    if (!currentWindow && typeof window !== "undefined") {
+      messageHandler = (event: MessageEvent) => {
+        const data = event.data as { type?: string; payload?: DocumentUpdatedPayload };
+        if (!data || data.type !== "document:updated" || !data.payload) return;
+        handleDocumentUpdated(data.payload);
+      };
+      window.addEventListener("message", messageHandler);
     }
 
     return () => {
@@ -175,6 +216,11 @@
       unsubscribeConnection();
       documentReadyUnlisten?.();
       documentReadyUnlisten = null;
+      documentUpdateUnlisten?.();
+      documentUpdateUnlisten = null;
+      if (messageHandler && typeof window !== "undefined") {
+        window.removeEventListener("message", messageHandler);
+      }
     };
   });
 
@@ -548,7 +594,7 @@
     if (typeof window === "undefined") return { x, y };
     const padding = 8;
     const menuWidth = 180;
-    const menuHeight = 44;
+    const menuHeight = 96;
     const maxX = Math.max(padding, window.innerWidth - menuWidth - padding);
     const maxY = Math.max(padding, window.innerHeight - menuHeight - padding);
     return { x: Math.min(x, maxX), y: Math.min(y, maxY) };
@@ -565,7 +611,34 @@
     contextMenu = { open: false, x: 0, y: 0, row: null };
   }
 
+  function handleDocumentUpdated(payload: DocumentUpdatedPayload): void {
+    if (!payload?.tabId || !payload.documentId) return;
+    const previous = runStates[payload.tabId];
+    if (!previous || previous.status !== "success") return;
+    const nextRows = previous.rows.map((row) => {
+      const rowId = getRowId(row);
+      if (rowId === payload.documentId) {
+        return payload.row;
+      }
+      return row;
+    });
+    runStates = {
+      ...runStates,
+      [payload.tabId]: {
+        ...previous,
+        rows: nextRows
+      }
+    };
+    if (payload.collectionPath) {
+      recordFieldStats(payload.collectionPath, [payload.row]);
+    }
+  }
+
   function getRowId(row: Record<string, unknown>): string {
+    const metaId = (row as { __docId?: unknown }).__docId;
+    if (typeof metaId === "string" && metaId) {
+      return metaId;
+    }
     const id = row.id;
     if (typeof id === "string" || typeof id === "number") {
       return String(id);
@@ -573,10 +646,20 @@
     return "Document";
   }
 
+  function isSyntheticRowId(row: Record<string, unknown>): boolean {
+    return (row as { __idSynthetic?: boolean }).__idSynthetic === true;
+  }
+
   function buildViewTitle(collectionPath: string, row: Record<string, unknown>): string {
     const collectionLabel = collectionPath || "collection";
     const idLabel = getRowId(row);
     return `${collectionLabel} - ${idLabel} - View Mode`;
+  }
+
+  function buildEditTitle(collectionPath: string, row: Record<string, unknown>): string {
+    const collectionLabel = collectionPath || "collection";
+    const idLabel = getRowId(row);
+    return `${collectionLabel} - ${idLabel} - Edit Mode`;
   }
 
   async function openJsonViewerWindow(row: Record<string, unknown>): Promise<void> {
@@ -608,7 +691,7 @@
 
     const label = `doc-view-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     const payload: DocumentViewPayload = { row, collectionPath, id: idLabel, title };
-    documentPayloads.set(label, payload);
+    documentPayloads.set(label, { event: "document:view", payload });
     const viewer = new WebviewWindow(label, {
       url,
       title,
@@ -616,6 +699,59 @@
       height: 720,
       minWidth: 720,
       minHeight: 520
+    });
+    void viewer.once("tauri://error", () => {
+      documentPayloads.delete(label);
+    });
+
+    closeContextMenu();
+  }
+
+  async function openEditDocumentWindow(row: Record<string, unknown>): Promise<void> {
+    if (!$activeTab || !$activeConnectionId) return;
+    const collectionPath = $activeTab.collectionPath || "collection";
+    const idLabel = getRowId(row);
+    const title = buildEditTitle(collectionPath, row);
+    const params = new URLSearchParams({
+      view: "document-edit",
+      collection: collectionPath,
+      id: idLabel
+    });
+    const url = `/?${params.toString()}`;
+
+    const payload: DocumentEditPayload = {
+      row,
+      collectionPath,
+      id: idLabel,
+      title,
+      tabId: $activeTab.id,
+      connectionId: $activeConnectionId,
+      idIsSynthetic: isSyntheticRowId(row)
+    };
+
+    if (!tauriEnabled) {
+      if (typeof window !== "undefined") {
+        const browserParams = new URLSearchParams({
+          view: "document-edit",
+          collection: collectionPath,
+          id: idLabel,
+          payload: JSON.stringify(payload)
+        });
+        window.open(`/?${browserParams.toString()}`, "_blank");
+      }
+      closeContextMenu();
+      return;
+    }
+
+    const label = `doc-edit-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    documentPayloads.set(label, { event: "document:edit", payload });
+    const viewer = new WebviewWindow(label, {
+      url,
+      title,
+      width: 940,
+      height: 760,
+      minWidth: 720,
+      minHeight: 560
     });
     void viewer.once("tauri://error", () => {
       documentPayloads.delete(label);
@@ -916,6 +1052,13 @@
           onclick={() => contextMenu.row && openJsonViewerWindow(contextMenu.row)}
         >
           View as JSON
+        </button>
+        <button
+          class="context-menu-item"
+          type="button"
+          onclick={() => contextMenu.row && openEditDocumentWindow(contextMenu.row)}
+        >
+          Edit document
         </button>
       </div>
     </div>

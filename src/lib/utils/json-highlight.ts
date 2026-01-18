@@ -4,7 +4,7 @@ export type JsonToken = {
 };
 
 const tokenRegex =
-  /("(?:\\.|[^"\\])*"(?:\\s*:)?|\\btrue\\b|\\bfalse\\b|\\bnull\\b|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)/g;
+  /("(?:\\.|[^"\\])*"(?:\s*:)?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
 
 export function formatJson(row: Record<string, unknown> | null): string {
   if (!row) return "";

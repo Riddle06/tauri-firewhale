@@ -2,7 +2,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { SignJWT, importPKCS8 } from "jose";
 import type { ConnectionProfile } from "$lib/models";
-import type { QueryAst, QueryRunResult, QueryValue, WhereClause } from "$lib/query/types";
+import type { QueryAst, QueryRunResult, WhereClause } from "$lib/query/types";
 
 type ServiceAccount = {
   client_email: string;
@@ -33,6 +33,11 @@ type FirestoreValue = {
 type FirestoreFilter =
   | { fieldFilter: { field: { fieldPath: string }; op: string; value: FirestoreValue } }
   | { compositeFilter: { op: "AND"; filters: FirestoreFilter[] } };
+
+type FirestoreDocument = {
+  name?: string;
+  fields?: Record<string, FirestoreValue>;
+};
 
 export type FirestoreQueryResult = QueryRunResult & {
   pageIndex: number;
@@ -77,8 +82,9 @@ async function loadServiceAccount(path: string): Promise<ServiceAccount> {
   return parseServiceAccount(raw);
 }
 
-function encodeFirestoreValue(value: QueryValue): FirestoreValue {
+function encodeFirestoreValue(value: unknown): FirestoreValue {
   if (value === null) return { nullValue: null };
+  if (value === undefined) return { nullValue: null };
   if (Array.isArray(value)) {
     return { arrayValue: { values: value.map(encodeFirestoreValue) } };
   }
@@ -87,6 +93,13 @@ function encodeFirestoreValue(value: QueryValue): FirestoreValue {
   if (typeof value === "number") {
     if (Number.isInteger(value)) return { integerValue: value.toString() };
     return { doubleValue: value };
+  }
+  if (typeof value === "object") {
+    const fields: Record<string, FirestoreValue> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      fields[key] = encodeFirestoreValue(entry);
+    }
+    return { mapValue: { fields } };
   }
   return { stringValue: String(value) };
 }
@@ -114,6 +127,14 @@ function decodeFirestoreValue(value?: FirestoreValue): unknown {
     return output;
   }
   return null;
+}
+
+function encodeFirestoreFields(data: Record<string, unknown>): Record<string, FirestoreValue> {
+  const fields: Record<string, FirestoreValue> = {};
+  for (const [key, value] of Object.entries(data)) {
+    fields[key] = encodeFirestoreValue(value);
+  }
+  return fields;
 }
 
 function buildFirestoreFilter(clauses: WhereClause[]): FirestoreFilter | undefined {
@@ -280,22 +301,46 @@ function extractDocumentId(name?: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
+function buildDocumentPath(collectionPath: string, documentId: string): string {
+  const normalizedCollection = collectionPath.replace(/^\/+|\/+$/g, "");
+  const normalizedId = documentId.replace(/^\/+|\/+$/g, "");
+  if (!normalizedCollection) return normalizedId;
+  if (!normalizedId) return normalizedCollection;
+  return `${normalizedCollection}/${normalizedId}`;
+}
+
+function decodeFirestoreDocument(document?: FirestoreDocument): Record<string, unknown> | null {
+  if (!document) return null;
+  const fields = document.fields ?? {};
+  const row: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    row[key] = decodeFirestoreValue(value);
+  }
+  const documentId = extractDocumentId(document.name);
+  if (documentId) {
+    const hasIdField = Object.prototype.hasOwnProperty.call(row, "id");
+    if (!hasIdField) {
+      row.id = documentId;
+    }
+    Object.defineProperty(row, "__docId", {
+      value: documentId,
+      enumerable: false
+    });
+    Object.defineProperty(row, "__idSynthetic", {
+      value: !hasIdField,
+      enumerable: false
+    });
+  }
+  return row;
+}
+
 function parseRunQueryResponse(payload: unknown): Record<string, unknown>[] {
   if (!Array.isArray(payload)) return [];
   const rows: Record<string, unknown>[] = [];
   for (const entry of payload) {
-    const document = (entry as { document?: { name?: string; fields?: Record<string, FirestoreValue> } })
-      .document;
-    if (!document) continue;
-    const fields = document.fields ?? {};
-    const row: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(fields)) {
-      row[key] = decodeFirestoreValue(value);
-    }
-    if (!("id" in row)) {
-      const id = extractDocumentId(document.name);
-      if (id) row.id = id;
-    }
+    const document = (entry as { document?: FirestoreDocument }).document;
+    const row = decodeFirestoreDocument(document);
+    if (!row) continue;
     rows.push(row);
   }
   return rows;
@@ -371,4 +416,60 @@ export async function runFirestoreQuery(
     pageSize,
     hasNextPage: rows.length === pageSize
   };
+}
+
+export async function updateFirestoreDocument(
+  connection: ConnectionProfile,
+  collectionPath: string,
+  documentId: string,
+  data: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  if (!collectionPath) {
+    throw new Error("Collection path is missing.");
+  }
+  if (!documentId) {
+    throw new Error("Document id is missing.");
+  }
+  const credentialPath = connection.auth.encryptedPayloadRef;
+  const serviceAccount = await loadServiceAccount(credentialPath);
+  if (
+    connection.projectId &&
+    serviceAccount.project_id &&
+    connection.projectId !== serviceAccount.project_id
+  ) {
+    throw new Error("Project ID does not match credential.");
+  }
+
+  const projectId = connection.projectId || serviceAccount.project_id;
+
+  if (!projectId) {
+    throw new Error("Project ID is missing.");
+  }
+
+  const accessToken = await getAccessToken(serviceAccount);
+  const documentPath = buildDocumentPath(collectionPath, documentId);
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${documentPath}`;
+
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      fields: encodeFirestoreFields(data)
+    })
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Firestore request failed (${response.status}): ${message}`);
+  }
+
+  const payload = (await response.json()) as FirestoreDocument;
+  const row = decodeFirestoreDocument(payload);
+  if (!row) {
+    throw new Error("Failed to decode updated document.");
+  }
+  return row;
 }

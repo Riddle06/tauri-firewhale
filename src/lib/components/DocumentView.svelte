@@ -57,6 +57,16 @@
     documentReady = true;
   }
 
+  function closeWindow(): void {
+    if (currentWindow) {
+      void currentWindow.close();
+      return;
+    }
+    if (typeof window !== "undefined") {
+      window.close();
+    }
+  }
+
   onMount(() => {
     setWindowTitle(buildTitle(viewCollection, viewDocumentId));
 
@@ -100,6 +110,11 @@
       <div class="document-placeholder">Waiting for document data...</div>
     {/if}
   </section>
+  <footer class="document-footer">
+    <div class="document-actions">
+      <button class="ghost" onclick={closeWindow}>Close</button>
+    </div>
+  </footer>
 </div>
 
 <style>
@@ -129,6 +144,26 @@
     flex: 1;
     min-height: 0;
     display: flex;
+  }
+
+  .document-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .document-actions {
+    display: flex;
+    gap: 12px;
+  }
+
+  .ghost {
+    border-radius: 999px;
+    border: 1px solid rgba(29, 26, 22, 0.12);
+    padding: 8px 14px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.9);
   }
 
   .document-placeholder {
