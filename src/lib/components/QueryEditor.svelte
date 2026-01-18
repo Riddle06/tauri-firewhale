@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { EditorState } from "@codemirror/state";
-  import { EditorView, placeholder } from "@codemirror/view";
+  import { EditorView, keymap, lineNumbers } from "@codemirror/view";
   import {
     autocompletion,
     snippetCompletion,
@@ -20,13 +20,17 @@
     collections = [],
     fieldStats = {},
     collectionPath = "",
-    onChange = () => {}
+    onChange = () => {},
+    onFormat = () => {},
+    onRun = () => {}
   } = $props<{
     value?: string;
     collections?: string[];
     fieldStats?: FieldStatsMap;
     collectionPath?: string;
     onChange?: (nextValue: string) => void;
+    onFormat?: () => void;
+    onRun?: () => void;
   }>();
 
   let editorRoot: HTMLDivElement | null = null;
@@ -64,13 +68,121 @@
     })
   ];
 
-  const placeholderText =
-    "db.collection('users')\n  .where('age', '>', 18)\n  .where('status', '==', 'active')\n  .orderBy('createdAt', 'desc')\n  .limit(50)\n  .get()";
+  const dbMemberCompletions: Completion[] = [
+    snippetCompletion("collection('${collection}')", {
+      label: "collection",
+      detail: "collection()"
+    })
+  ];
+
+  const chainMemberCompletions: Completion[] = [
+    snippetCompletion("where('${field}', '==', ${value})", {
+      label: "where",
+      detail: "where()"
+    }),
+    snippetCompletion("orderBy('${field}', 'asc')", {
+      label: "orderBy",
+      detail: "orderBy()"
+    }),
+    snippetCompletion("limit(50)", {
+      label: "limit",
+      detail: "limit()"
+    }),
+    snippetCompletion("get()", {
+      label: "get",
+      detail: "get()"
+    })
+  ];
+
+  const editorKeymap = keymap.of([
+    {
+      key: "Tab",
+      run: (view) => {
+        view.dispatch(view.state.replaceSelection("  "));
+        return true;
+      }
+    },
+    {
+      key: "Mod-Shift-f",
+      run: () => {
+        onFormat();
+        return true;
+      }
+    },
+    {
+      key: "Shift-Alt-f",
+      run: () => {
+        onFormat();
+        return true;
+      }
+    },
+    {
+      key: "Mod-Enter",
+      run: () => {
+        onRun();
+        return true;
+      }
+    }
+  ]);
 
   function resolveCollectionFromText(text: string): string {
     const match = /\bcollection\s*\(\s*['"]([^'"]+)['"]/.exec(text);
     if (match?.[1]) return normalizeCollectionPath(match[1]);
     return normalizeCollectionPath(collectionPath);
+  }
+
+  function isInsideString(text: string): boolean {
+    let inString: "'" | "\"" | null = null;
+    let escaped = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (char === inString) {
+          inString = null;
+        }
+        continue;
+      }
+      if (char === "'" || char === "\"") {
+        inString = char;
+      }
+    }
+
+    return inString !== null;
+  }
+
+  function dotCompletion(context: CompletionContext): CompletionResult | null {
+    const before = context.state.sliceDoc(0, context.pos);
+    const match = /\.(\w*)$/.exec(before);
+    if (!match) return null;
+    const beforeDot = before.slice(0, match.index);
+    if (isInsideString(beforeDot)) return null;
+
+    if (/\bdb\s*$/.test(beforeDot)) {
+      return {
+        from: context.pos - match[1].length,
+        options: dbMemberCompletions,
+        validFor: /\w*/
+      };
+    }
+
+    if (/\bcollection\s*\(/.test(beforeDot)) {
+      return {
+        from: context.pos - match[1].length,
+        options: chainMemberCompletions,
+        validFor: /\w*/
+      };
+    }
+
+    return null;
   }
 
   function buildCollectionOptions(): Completion[] {
@@ -137,6 +249,7 @@
   function completionSource(context: CompletionContext): CompletionResult | null {
     const before = context.state.sliceDoc(0, context.pos);
     return (
+      dotCompletion(context) ??
       collectionCompletion(context, before) ??
       fieldCompletion(context, before) ??
       keywordCompletion(context)
@@ -148,9 +261,10 @@
     const state = EditorState.create({
       doc: value,
       extensions: [
+        lineNumbers(),
         javascript(),
         vscodeDark,
-        placeholder(placeholderText),
+        editorKeymap,
         EditorView.updateListener.of((update) => {
           if (!update.docChanged || !view) return;
           if (isUpdating) return;
@@ -180,3 +294,45 @@
 </script>
 
 <div class="editor" bind:this={editorRoot}></div>
+
+<style>
+  .editor {
+    flex: 1;
+    min-height: 0;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #1e1e1e;
+    overflow: hidden;
+    display: flex;
+  }
+
+  .editor :global(.cm-editor) {
+    flex: 1;
+    height: 100%;
+  }
+
+  .editor :global(.cm-scroller) {
+    height: 100%;
+    overflow: auto;
+    font-family: "IBM Plex Mono", "Fira Mono", monospace;
+    font-size: 0.9rem;
+  }
+
+  .editor :global(.cm-content) {
+    padding: 12px;
+  }
+
+  .editor :global(.cm-gutters) {
+    background: #1a1a1a;
+    color: rgba(255, 255, 255, 0.55);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .editor :global(.cm-lineNumbers .cm-gutterElement) {
+    padding: 0 10px 0 8px;
+  }
+
+  .editor :global(.cm-activeLineGutter) {
+    background: rgba(255, 255, 255, 0.08);
+  }
+</style>

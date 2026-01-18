@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import {
@@ -151,6 +151,143 @@
     return `db.collection('${normalized}')\n  .orderBy('id', 'asc')\n  .limit(${DEFAULT_QUERY_LIMIT})\n  .get()`;
   }
 
+  function normalizeQueryWhitespace(input: string): string {
+    let output = "";
+    let inString: "'" | "\"" | null = null;
+    let escaped = false;
+    let sawSpace = false;
+
+    for (let i = 0; i < input.length; i += 1) {
+      const char = input[i];
+      if (inString) {
+        output += char;
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (char === inString) {
+          inString = null;
+        }
+        continue;
+      }
+      if (char === "'" || char === "\"") {
+        inString = char;
+        output += char;
+        sawSpace = false;
+        continue;
+      }
+      if (/\s/.test(char)) {
+        if (!sawSpace) {
+          output += " ";
+          sawSpace = true;
+        }
+        continue;
+      }
+      sawSpace = false;
+      output += char;
+    }
+
+    return output.trim();
+  }
+
+  function splitQueryChain(input: string): string[] {
+    const segments: string[] = [];
+    let current = "";
+    let inString: "'" | "\"" | null = null;
+    let escaped = false;
+    let depth = 0;
+
+    for (let i = 0; i < input.length; i += 1) {
+      const char = input[i];
+      if (inString) {
+        current += char;
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (char === inString) {
+          inString = null;
+        }
+        continue;
+      }
+      if (char === "'" || char === "\"") {
+        inString = char;
+        current += char;
+        continue;
+      }
+      if (char === "(" || char === "[" || char === "{") {
+        depth += 1;
+        current += char;
+        continue;
+      }
+      if (char === ")" || char === "]" || char === "}") {
+        depth = Math.max(0, depth - 1);
+        current += char;
+        continue;
+      }
+      if (char === "." && depth === 0) {
+        const prev = input[i - 1];
+        const next = input[i + 1];
+        if (prev && next && /[0-9]/.test(prev) && /[0-9]/.test(next)) {
+          current += char;
+          continue;
+        }
+        if (current.trim()) {
+          segments.push(current.trim());
+        }
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+
+    if (current.trim()) {
+      segments.push(current.trim());
+    }
+    return segments;
+  }
+
+  function formatQueryText(input: string): string {
+    const trimmed = input.trim();
+    if (!trimmed) return input;
+
+    const normalized = normalizeQueryWhitespace(trimmed);
+    const segments = splitQueryChain(normalized);
+    if (segments.length === 0) return input;
+    if (segments.length === 1) return segments[0];
+
+    const lines: string[] = [];
+    let startIndex = 1;
+    if (segments.length > 1 && !segments[0].includes("(")) {
+      lines.push(`${segments[0]}.${segments[1]}`.trim());
+      startIndex = 2;
+    } else {
+      lines.push(segments[0].trim());
+    }
+    for (let i = startIndex; i < segments.length; i += 1) {
+      const segment = segments[i].trim();
+      if (!segment) continue;
+      lines.push(`  .${segment}`);
+    }
+    return lines.join("\n");
+  }
+
+  function formatActiveQuery(): void {
+    if (!$activeTab) return;
+    const formatted = formatQueryText($activeTab.queryText);
+    if (formatted !== $activeTab.queryText) {
+      updateQueryText($activeTab.id, formatted);
+    }
+  }
+
   function handleQueryInput(nextValue: string): void {
     if (!$activeTab) return;
     updateQueryText($activeTab.id, nextValue);
@@ -238,13 +375,18 @@
     }
   }
 
-  function openCollectionTab(path: string): void {
+  async function openCollectionTab(path: string): Promise<void> {
     if (!$activeConnectionId) return;
     const created = addTab($activeConnectionId, path);
     if (created) {
       updateQueryText(created.id, buildDefaultQuery(path));
     }
     bottomTab = "result";
+    if (!created) return;
+    await tick();
+    if ($activeTab?.id === created.id) {
+      void runQuery();
+    }
   }
 
   function runPreviousPage(): void {
@@ -452,14 +594,6 @@
           {#if workspaceLoading}
             <span class="status">Loading workspace...</span>
           {/if}
-          <button
-            class="primary run-button"
-            type="button"
-            onclick={() => runQuery()}
-            disabled={!$activeTab || activeRunState.status === "running"}
-          >
-            {activeRunState.status === "running" ? "Running..." : "Run"}
-          </button>
         </div>
       </header>
 
@@ -486,9 +620,29 @@
       <section class="query-panel">
         <div class="panel-header">
           <h3>Query</h3>
-          <span class="status muted">
-            {$activeTab?.collectionPath || "Select a collection"}
-          </span>
+          <div class="panel-meta">
+            <span class="status muted">
+              {$activeTab?.collectionPath || "Select a collection"}
+            </span>
+            <button
+              class="primary run-button"
+              type="button"
+              onclick={() => runQuery()}
+              disabled={!$activeTab || activeRunState.status === "running"}
+              title="Run (Cmd/Ctrl+Enter)"
+            >
+              {activeRunState.status === "running" ? "Running..." : "Run"}
+            </button>
+            <button
+              class="ghost format-button"
+              type="button"
+              onclick={formatActiveQuery}
+              disabled={!$activeTab}
+              title="Format (Cmd/Ctrl+Shift+F or Shift+Alt+F)"
+            >
+              Format
+            </button>
+          </div>
         </div>
         {#if $activeTab}
           <QueryEditor
@@ -497,6 +651,8 @@
             fieldStats={$fieldStats}
             collectionPath={$activeTab.collectionPath}
             onChange={handleQueryInput}
+            onFormat={formatActiveQuery}
+            onRun={() => runQuery()}
           />
         {:else}
           <div class="editor editor-empty">Select a collection to begin.</div>
@@ -602,7 +758,8 @@
   .workspace-shell {
     display: grid;
     grid-template-columns: 260px 1fr;
-    min-height: 100vh;
+    height: 100vh;
+    min-height: 0;
   }
 
   .collections-panel {
@@ -769,9 +926,11 @@
 
   .workspace-main {
     display: grid;
-    grid-template-rows: auto auto 1fr auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
     gap: 16px;
     padding: 24px;
+    height: 100%;
+    box-sizing: border-box;
     min-height: 0;
     min-width: 0;
   }
@@ -875,11 +1034,23 @@
     min-width: 0;
   }
 
+  .query-panel {
+    height: 100%;
+  }
+
   .panel-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     margin-bottom: 10px;
+  }
+
+  .panel-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .panel-header h3 {
@@ -898,25 +1069,14 @@
     min-height: 0;
   }
 
-  .editor :global(.cm-editor) {
-    height: 100%;
+  .format-button {
+    padding: 6px 12px;
+    font-size: 0.75rem;
   }
 
-  .editor :global(.cm-scroller) {
-    font-family: "IBM Plex Mono", "Fira Mono", monospace;
-    font-size: 0.9rem;
-  }
-
-  .editor :global(.cm-content) {
-    padding: 12px;
-  }
-
-  .editor :global(.cm-gutters) {
-    display: none;
-  }
-
-  .editor :global(.cm-placeholder) {
-    color: rgba(255, 255, 255, 0.45);
+  .format-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .editor-empty {
