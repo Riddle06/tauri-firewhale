@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
   import { isTauri } from "@tauri-apps/api/core";
-  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+  import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+  import type { UnlistenFn } from "@tauri-apps/api/event";
   import {
     activeConnection,
     activeConnectionId,
@@ -49,6 +51,12 @@
   let runStates = $state<Record<string, QueryRunState>>({});
   let runLogs = $state<Record<string, QueryLog[]>>({});
   let runSequence = $state(0);
+  let contextMenu = $state<ContextMenuState>({
+    open: false,
+    x: 0,
+    y: 0,
+    row: null
+  });
 
   const tauriEnabled = isTauri();
   const currentWindow = tauriEnabled ? getCurrentWebviewWindow() : null;
@@ -69,6 +77,24 @@
     level: "info" | "error";
     message: string;
     timestamp: number;
+  };
+
+  type DocumentViewPayload = {
+    row: Record<string, unknown>;
+    collectionPath: string;
+    id: string;
+    title: string;
+  };
+
+  type DocumentReadyPayload = {
+    label: string;
+  };
+
+  type ContextMenuState = {
+    open: boolean;
+    x: number;
+    y: number;
+    row: Record<string, unknown> | null;
   };
 
   const emptyRunState: QueryRunState = {
@@ -95,6 +121,10 @@
     if (!keys.includes("id")) return keys;
     return ["id", ...keys.filter((key) => key !== "id")];
   });
+
+  const documentPayloads = new SvelteMap<string, DocumentViewPayload>();
+
+  let documentReadyUnlisten: UnlistenFn | null = null;
 
   onMount(() => {
     let currentConnection: string | null = null;
@@ -125,9 +155,26 @@
       }
     });
 
+    if (currentWindow) {
+      void currentWindow
+        .listen<DocumentReadyPayload>("document:ready", (event) => {
+          const label = event.payload?.label;
+          if (!label) return;
+          const payload = documentPayloads.get(label);
+          if (!payload) return;
+          void currentWindow.emitTo(label, "document:view", payload);
+          documentPayloads.delete(label);
+        })
+        .then((cleanup) => {
+          documentReadyUnlisten = cleanup;
+        });
+    }
+
     return () => {
       unsubscribe();
       unsubscribeConnection();
+      documentReadyUnlisten?.();
+      documentReadyUnlisten = null;
     };
   });
 
@@ -496,6 +543,100 @@
   function formatTimestamp(timestamp: number): string {
     return new Date(timestamp).toLocaleTimeString();
   }
+
+  function resolveContextMenuPosition(x: number, y: number): { x: number; y: number } {
+    if (typeof window === "undefined") return { x, y };
+    const padding = 8;
+    const menuWidth = 180;
+    const menuHeight = 44;
+    const maxX = Math.max(padding, window.innerWidth - menuWidth - padding);
+    const maxY = Math.max(padding, window.innerHeight - menuHeight - padding);
+    return { x: Math.min(x, maxX), y: Math.min(y, maxY) };
+  }
+
+  function openRowContextMenu(event: MouseEvent, row: Record<string, unknown>): void {
+    event.preventDefault();
+    const { x, y } = resolveContextMenuPosition(event.clientX, event.clientY);
+    contextMenu = { open: true, x, y, row };
+  }
+
+  function closeContextMenu(): void {
+    if (!contextMenu.open) return;
+    contextMenu = { open: false, x: 0, y: 0, row: null };
+  }
+
+  function getRowId(row: Record<string, unknown>): string {
+    const id = row.id;
+    if (typeof id === "string" || typeof id === "number") {
+      return String(id);
+    }
+    return "Document";
+  }
+
+  function buildViewTitle(collectionPath: string, row: Record<string, unknown>): string {
+    const collectionLabel = collectionPath || "collection";
+    const idLabel = getRowId(row);
+    return `${collectionLabel} - ${idLabel} - View Mode`;
+  }
+
+  async function openJsonViewerWindow(row: Record<string, unknown>): Promise<void> {
+    if (!$activeTab) return;
+    const collectionPath = $activeTab.collectionPath || "collection";
+    const idLabel = getRowId(row);
+    const title = buildViewTitle(collectionPath, row);
+    const params = new URLSearchParams({
+      view: "document",
+      collection: collectionPath,
+      id: idLabel
+    });
+    const url = `/?${params.toString()}`;
+
+    if (!tauriEnabled) {
+      if (typeof window !== "undefined") {
+        const payload = JSON.stringify({ row, collectionPath, id: idLabel, title });
+        const browserParams = new URLSearchParams({
+          view: "document",
+          collection: collectionPath,
+          id: idLabel,
+          payload
+        });
+        window.open(`/?${browserParams.toString()}`, "_blank");
+      }
+      closeContextMenu();
+      return;
+    }
+
+    const label = `doc-view-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    const payload: DocumentViewPayload = { row, collectionPath, id: idLabel, title };
+    documentPayloads.set(label, payload);
+    const viewer = new WebviewWindow(label, {
+      url,
+      title,
+      width: 920,
+      height: 720,
+      minWidth: 720,
+      minHeight: 520
+    });
+    void viewer.once("tauri://error", () => {
+      documentPayloads.delete(label);
+    });
+
+    closeContextMenu();
+  }
+
+  function handleContextMenuBackdropClick(event: MouseEvent): void {
+    if (event.currentTarget !== event.target) return;
+    closeContextMenu();
+  }
+
+  function handleBackdropKeydown(
+    event: KeyboardEvent,
+    closeHandler: () => void
+  ): void {
+    if (event.key !== "Enter" && event.key !== " " && event.key !== "Escape") return;
+    event.preventDefault();
+    closeHandler();
+  }
 </script>
 
 {#if !$activeConnectionId}
@@ -700,7 +841,11 @@
                     </thead>
                     <tbody>
                       {#each activeRunState.rows as row, rowIndex (row.id ?? rowIndex)}
-                        <tr>
+                        <tr
+                          class="result-row"
+                          oncontextmenu={(event) => openRowContextMenu(event, row)}
+                          ondblclick={() => openJsonViewerWindow(row)}
+                        >
                           {#each activeColumns as column (column)}
                             <td>{formatCell(row[column])}</td>
                           {/each}
@@ -752,6 +897,29 @@
       </section>
     </section>
   </div>
+  {#if contextMenu.open}
+    <div
+      class="context-menu-backdrop"
+      role="button"
+      tabindex="0"
+      aria-label="Close context menu"
+      onclick={handleContextMenuBackdropClick}
+      onkeydown={(event) => handleBackdropKeydown(event, closeContextMenu)}
+    >
+      <div
+        class="context-menu"
+        style={`top: ${contextMenu.y}px; left: ${contextMenu.x}px;`}
+      >
+        <button
+          class="context-menu-item"
+          type="button"
+          onclick={() => contextMenu.row && openJsonViewerWindow(contextMenu.row)}
+        >
+          View as JSON
+        </button>
+      </div>
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -867,6 +1035,10 @@
 
   .collection-row + .collection-row {
     border-top: 1px solid rgba(29, 26, 22, 0.08);
+  }
+
+  .collection-row:hover {
+    background: rgba(29, 122, 111, 0.08);
   }
 
   .collection-row.active {
@@ -1178,11 +1350,22 @@
   }
 
   .result-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.1em;
     color: rgba(29, 26, 22, 0.55);
     background: rgba(255, 255, 255, 0.95);
+  }
+
+  .result-row {
+    cursor: pointer;
+  }
+
+  .result-row:hover {
+    background: rgba(29, 122, 111, 0.08);
   }
 
   .console-list {
@@ -1211,6 +1394,37 @@
   .console-time {
     font-size: 0.7rem;
     color: rgba(29, 26, 22, 0.5);
+  }
+
+  .context-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+  }
+
+  .context-menu {
+    position: absolute;
+    min-width: 180px;
+    padding: 6px;
+    border-radius: 12px;
+    border: 1px solid rgba(29, 26, 22, 0.18);
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 16px 32px rgba(29, 26, 22, 0.18);
+  }
+
+  .context-menu-item {
+    width: 100%;
+    text-align: left;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+
+  .context-menu-item:hover {
+    background: rgba(29, 122, 111, 0.12);
   }
 
   .workspace-empty {

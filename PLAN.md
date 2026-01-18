@@ -284,6 +284,25 @@ Milestone 3：Suggestion（做到“像 IDE”）
 
 ⸻
 
+Milestone 3.1：Query Result 強化（互動與可讀性）
+
+目標
+	•	Collection list / result rows hover
+	•	Result row 右鍵選單 + double click 開 JSON
+	•	Result header sticky（捲動時欄位名稱固定）
+
+交付物
+	•	Result row hover + context menu / double click
+	•	JSON viewer 視窗（syntax highlight）
+	•	Result table header freeze
+
+驗收
+	•	Collection list 與 result rows 有明顯 hover
+	•	右鍵/雙擊可開 JSON viewer，顯示正確 row
+	•	捲動結果表格時欄位名稱保持可見
+
+⸻
+
 Milestone 4：Missing Index Fallback（你差異化的亮點）
 
 目標

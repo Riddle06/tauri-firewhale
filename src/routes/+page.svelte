@@ -2,12 +2,22 @@
   import { page } from "$app/stores";
   import LauncherView from "$lib/components/LauncherView.svelte";
   import WorkspaceView from "$lib/components/WorkspaceView.svelte";
+  import DocumentView from "$lib/components/DocumentView.svelte";
 
   const view = $derived.by(() => $page.url.searchParams.get("view") ?? "launcher");
   const connectionId = $derived.by(() => $page.url.searchParams.get("connectionId"));
+  const collectionPath = $derived.by(() => $page.url.searchParams.get("collection"));
+  const documentId = $derived.by(() => $page.url.searchParams.get("id"));
+  const payload = $derived.by(() => $page.url.searchParams.get("payload"));
 </script>
 
-{#if view === "workspace"}
+{#if view === "document"}
+  <DocumentView
+    collectionPath={collectionPath}
+    documentId={documentId}
+    payload={payload}
+  />
+{:else if view === "workspace"}
   <WorkspaceView connectionId={connectionId} />
 {:else}
   <LauncherView />

@@ -175,6 +175,43 @@
 測試門檻
 - [x] Unit：completion（keywords + fields）
 - [x] Integration：FieldStats 增量更新
+- ---
+
+## Milestone 3.1： 強化 Query Result 的功能
+狀態：IN_PROGRESS
+
+目標
+- Collection List 跟 Query Result List 需要有 hover 的效果
+- Query Result 的 row 要支援點擊右鍵 有 view as JSON, 或是針對該 row double click 也會 trigger view as JSON
+  - 點擊了之後會有一個視窗出來, 會是該 doc 的內容
+  - 該 document 要有 colorful highlight
+- Query Result 的 欄位名稱要是 freeze 的, (捲軸往下滾  欄位名稱還是要在)
+
+交付物
+- [x] Collection list / Query result list hover 狀態
+- [x] Query result row context menu（View as JSON）+ double click 觸發
+- [x] JSON viewer 視窗（syntax highlight + formatted JSON）
+- [x] Query result header freeze（scroll 時欄位名稱固定）
+
+
+任務
+- [x] 補齊 collection list / result rows hover 樣式
+- [x] 結果列互動（右鍵選單、double click）
+- [x] JSON viewer 視窗（開關、資料綁定、格式化、highlight）
+- [x] 表格 header sticky（配合 scroll 容器調整）
+
+
+驗收條件
+- [x] Collection list 與 Query result list hover 明顯可辨
+- [x] 結果列右鍵與 double click 都能打開 JSON viewer
+- [x] JSON viewer 顯示該 row 完整內容且有語法高亮
+- [x] Query result 欄位名稱在捲動時保持固定
+
+
+測試門檻
+- [x] Unit：JSON viewer formatter（縮排/穩定輸出）
+- [x] Integration：右鍵/雙擊開啟 viewer 並顯示正確 row
+- [x] Manual：結果表格捲動時 header 不消失
 
 ---
 

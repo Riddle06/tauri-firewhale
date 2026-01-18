@@ -146,6 +146,11 @@ Milestone 3（Suggestion）
 	•	✅ Unit：completion（keywords + fields）
 	•	✅ Integration：FieldStats 從查詢結果增量更新
 
+Milestone 3.1（Query Result 強化）
+	•	✅ Unit：JSON viewer formatter（穩定輸出）
+	•	Integration：右鍵/雙擊開啟 viewer 並顯示正確 row
+	•	Manual：result header sticky + hover 狀態
+
 Milestone 4（Missing index fallback）
 	•	✅ Unit：error classifier + fallback plan builder
 	•	✅ Integration/Mock：runner 接到 missing index → UI state 進入 fallback 模式
