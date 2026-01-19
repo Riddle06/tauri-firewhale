@@ -47,3 +47,45 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.EXE_PATH }}
+
+  build-macos:
+    runs-on: macos-14
+    needs: build-windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "latest"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build macOS bundle
+        run: bun run tauri build
+
+      - name: Prepare release asset
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          bundle_root="src-tauri/target/release/bundle"
+          dmg="$(find "$bundle_root" -type f -name "*.dmg" | head -n 1)"
+          if [ -z "$dmg" ]; then
+            echo "No .dmg bundle found under $bundle_root"
+            exit 1
+          fi
+          dest="$GITHUB_WORKSPACE/firewhale-ce-$tag-macos-aarch64.dmg"
+          cp "$dmg" "$dest"
+          echo "DMG_PATH=$dest" >> "$GITHUB_ENV"
+
+      - name: Upload macOS asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_PATH }}
