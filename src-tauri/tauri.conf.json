@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "tauri-firewhale",
   "version": "0.1.0",
-  "identifier": "com.rlee.tauri-app",
+  "identifier": "com.rlee.tauri-firewhale",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
+        "title": "tauri-firewhale",
         "width": 800,
         "height": 600
       }
