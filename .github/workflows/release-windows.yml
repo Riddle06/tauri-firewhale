@@ -1,0 +1,49 @@
+name: Release Windows Bundle
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "latest"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Windows bundle
+        run: bun run tauri build
+
+      - name: Prepare release asset
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $bundleRoot = 'src-tauri/target/release/bundle'
+          $nsis = Get-ChildItem -Path $bundleRoot -Recurse -Filter *.exe | Where-Object { $_.FullName -match '\\bundle\\nsis\\' } | Select-Object -First 1
+          $exe = if ($nsis) { $nsis } else { Get-ChildItem -Path $bundleRoot -Recurse -Filter *.exe | Select-Object -First 1 }
+          if (-not $exe) { throw "No .exe bundle found under $bundleRoot" }
+          $dest = Join-Path $env:GITHUB_WORKSPACE "firewhale-ce-$tag-x86_64.exe"
+          Copy-Item $exe.FullName $dest -Force
+          "EXE_PATH=$dest" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.EXE_PATH }}
