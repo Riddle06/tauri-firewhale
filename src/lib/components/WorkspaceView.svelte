@@ -48,6 +48,7 @@
   let createCollectionOpen = $state(false);
   let newCollectionPath = $state("");
   let collectionError = $state("");
+  let collectionFilter = $state("");
   let runStates = $state<Record<string, QueryRunState>>({});
   let runLogs = $state<Record<string, QueryLog[]>>({});
   let runSequence = $state(0);
@@ -141,6 +142,14 @@
     const keys = Object.keys(activeRunState.rows[0]);
     if (!keys.includes("id")) return keys;
     return ["id", ...keys.filter((key) => key !== "id")];
+  });
+
+  const filteredCollections = $derived.by(() => {
+    const needle = collectionFilter.trim().toLowerCase();
+    if (!needle) return $collections;
+    return $collections.filter((collection) =>
+      collection.toLowerCase().includes(needle)
+    );
   });
 
   const documentPayloads = new SvelteMap<string, DocumentWindowPayload>();
@@ -794,6 +803,15 @@
 
       <div class="collections-body">
         <div class="section-title">Collections</div>
+        <div class="collection-filter">
+          <input
+            class="collection-filter-input"
+            type="search"
+            placeholder="Filter collections"
+            bind:value={collectionFilter}
+            aria-label="Filter collections"
+          />
+        </div>
         <div class="collection-scroll">
           {#if collectionsLoading}
             <div class="collections-empty">
@@ -809,6 +827,11 @@
               <p>No collections found.</p>
               <p class="muted">Create one or check your credentials.</p>
             </div>
+          {:else if filteredCollections.length === 0}
+            <div class="collections-empty">
+              <p>No collections match.</p>
+              <p class="muted">Try another keyword.</p>
+            </div>
           {:else}
             <div class="collection-table">
               <div class="collection-header">
@@ -816,7 +839,7 @@
                 <span>Collection</span>
               </div>
               <div class="collection-rows">
-                {#each $collections as collection, index (collection)}
+                {#each filteredCollections as collection, index (collection)}
                   <button
                     class={`collection-row ${
                       $activeTab?.collectionPath === collection ? "active" : ""
@@ -1122,7 +1145,7 @@
 
   .collections-body {
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    grid-template-rows: auto auto 1fr auto;
     gap: 12px;
     flex: 1;
     min-height: 0;
@@ -1139,6 +1162,24 @@
     min-height: 0;
     overflow-y: auto;
     padding-right: 4px;
+  }
+
+  .collection-filter {
+    display: flex;
+  }
+
+  .collection-filter-input {
+    width: 100%;
+    border-radius: 12px;
+    border: 1px solid rgba(var(--fw-frost-rgb), 0.9);
+    padding: 8px 10px;
+    font-size: 0.9rem;
+    background: #fff;
+  }
+
+  .collection-filter-input:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(var(--fw-sky-rgb), 0.35);
   }
 
   .collection-table {

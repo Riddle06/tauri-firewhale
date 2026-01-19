@@ -62,6 +62,7 @@
 
 ### 列表 / 表格 / 選單
 - Collection List / Query List hover: Ice Glow 實心底 + Whale Blue 明顯描邊/內陰影。
+- Collection Filter Input: 純白底 + Frost Line 邊框；Focus ring 使用 Sky Foam。
 - Query Result Header: 純白實心底，避免透明或模糊效果造成髒感。
 - Query Result Row: 每列底部加淡分隔線 (低對比)，提升資料可讀性。
 - Context Menu: 純白實心底 + Deep Ocean 淺邊框；Item hover 使用 Ice Glow 實心底。
