@@ -137,6 +137,7 @@
   .document-title {
     font-size: 1.1rem;
     font-weight: 600;
+    color: var(--fw-deep);
   }
 
 
@@ -159,22 +160,30 @@
 
   .ghost {
     border-radius: 999px;
-    border: 1px solid rgba(29, 26, 22, 0.12);
+    border: 1px solid transparent;
     padding: 8px 14px;
     font-size: 0.85rem;
     cursor: pointer;
-    background: rgba(255, 255, 255, 0.9);
+    background: rgba(var(--fw-ice-rgb), 0.9);
+    border-color: rgba(var(--fw-frost-rgb), 0.9);
+    color: var(--fw-deep);
+    transition: background-color 0.15s ease, transform 0.15s ease;
+  }
+
+  .ghost:hover {
+    background: rgba(var(--fw-sky-rgb), 0.35);
+    transform: translateY(-1px);
   }
 
   .document-placeholder {
     width: 100%;
     border-radius: 16px;
-    border: 1px dashed rgba(29, 26, 22, 0.2);
-    background: rgba(255, 255, 255, 0.7);
+    border: 1px dashed rgba(var(--fw-frost-rgb), 0.9);
+    background: rgba(var(--fw-ice-rgb), 0.75);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: rgba(29, 26, 22, 0.55);
+    color: var(--fw-slate);
     font-size: 0.9rem;
   }
 </style>

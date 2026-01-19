@@ -182,8 +182,8 @@
     flex: 1;
     min-height: 0;
     border-radius: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: #1e1e1e;
+    border: 1px solid rgba(var(--fw-deep-rgb), 0.35);
+    background: var(--fw-ink);
     overflow: hidden;
     display: flex;
   }
@@ -191,6 +191,7 @@
   .editor :global(.cm-editor) {
     flex: 1;
     height: 100%;
+    background-color: var(--fw-ink);
   }
 
   .editor :global(.cm-scroller) {
@@ -205,9 +206,9 @@
   }
 
   .editor :global(.cm-gutters) {
-    background: #1a1a1a;
-    color: rgba(255, 255, 255, 0.55);
-    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(var(--fw-deep-rgb), 0.7);
+    color: rgba(var(--fw-ice-rgb), 0.7);
+    border-right: 1px solid rgba(var(--fw-deep-rgb), 0.5);
   }
 
   .editor :global(.cm-lineNumbers .cm-gutterElement) {
@@ -215,6 +216,6 @@
   }
 
   .editor :global(.cm-activeLineGutter) {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(var(--fw-whale-rgb), 0.2);
   }
 </style>

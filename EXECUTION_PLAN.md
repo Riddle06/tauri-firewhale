@@ -256,7 +256,7 @@
 
 ---
 
-## Milestone 4：Missing Index Fallback
+## Milestone 4：Missing Index Handler
 狀態：TODO
 
 目標
@@ -280,30 +280,10 @@
 - [ ] Unit：error classifier + fallback plan
 - [ ] Integration/Mock：runner 接到 missing index 進入 fallback 模式
 
----
-
-## Milestone 5：多 Connection 同時開
-狀態：TODO
-
-目標
-- 同一 workspace 同時開 dev/prod，不混線 (dev 跟 prod 只是範例, workspace 指的是不同的 env)
-
-交付物
-- [ ] multi-client 管理（依 connectionId 路由）
-- [ ] tab 顯示 connection badge
-- [ ] prod 顯眼提示（顏色/標示）
-
-驗收條件
-- [ ] 同時開 dev/users 與 prod/users
-- [ ] Query 執行確實打到對的環境
-
-測試門檻
-- [ ] Unit：tab 路由到正確 connectionId
-- [ ] Integration：同時對兩份資料查詢不互串
 
 ---
 
-## Milestone 6：打磨與效率 + E2E
+## Milestone 5 ：打磨與效率 + E2E
 狀態：TODO
 
 目標

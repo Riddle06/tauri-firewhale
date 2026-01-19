@@ -60,6 +60,12 @@
 - 內文: Ink / Slate
 - 強調文字: Flame Orange (少量點綴)
 
+### 列表 / 表格 / 選單
+- Collection List / Query List hover: Ice Glow 實心底 + Whale Blue 明顯描邊/內陰影。
+- Query Result Header: 純白實心底，避免透明或模糊效果造成髒感。
+- Query Result Row: 每列底部加淡分隔線 (低對比)，提升資料可讀性。
+- Context Menu: 純白實心底 + Deep Ocean 淺邊框；Item hover 使用 Ice Glow 實心底。
+
 ## 7) 可用視覺語氣
 - 色彩節奏: 冷色為主體、暖色為爆點
 - 氣質: 可信賴的工具感 + 趣味的品牌識別

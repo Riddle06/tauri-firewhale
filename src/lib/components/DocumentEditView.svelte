@@ -292,11 +292,12 @@
   .document-title {
     font-size: 1.1rem;
     font-weight: 600;
+    color: var(--fw-deep);
   }
 
   .document-subtitle {
     font-size: 0.85rem;
-    color: rgba(29, 26, 22, 0.6);
+    color: var(--fw-slate);
   }
 
   .document-body {
@@ -308,12 +309,12 @@
   .document-placeholder {
     width: 100%;
     border-radius: 16px;
-    border: 1px dashed rgba(29, 26, 22, 0.2);
-    background: rgba(255, 255, 255, 0.7);
+    border: 1px dashed rgba(var(--fw-frost-rgb), 0.9);
+    background: rgba(var(--fw-ice-rgb), 0.75);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: rgba(29, 26, 22, 0.55);
+    color: var(--fw-slate);
     font-size: 0.9rem;
   }
 
@@ -334,18 +335,18 @@
   .status {
     padding: 6px 10px;
     border-radius: 10px;
-    background: rgba(29, 122, 111, 0.1);
-    color: #1d5c55;
+    background: rgba(var(--fw-whale-rgb), 0.12);
+    color: var(--fw-deep);
   }
 
   .status.error {
-    background: rgba(180, 35, 24, 0.12);
-    color: #b42318;
+    background: rgba(var(--fw-ember-rgb), 0.12);
+    color: var(--fw-ember);
   }
 
   .status.warning {
-    background: rgba(217, 119, 6, 0.12);
-    color: #a25405;
+    background: rgba(var(--fw-flame-light-rgb), 0.25);
+    color: var(--fw-flame);
   }
 
   .document-actions {
@@ -363,12 +364,28 @@
   }
 
   .primary {
-    background: #1d7a6f;
+    background: var(--fw-whale);
     color: #fff;
+    box-shadow: 0 8px 16px rgba(var(--fw-whale-rgb), 0.2);
+    transition: transform 0.15s ease, box-shadow 0.15s ease,
+      background-color 0.15s ease;
+  }
+
+  .primary:hover {
+    background: var(--fw-deep);
+    box-shadow: 0 10px 20px rgba(var(--fw-deep-rgb), 0.25);
+    transform: translateY(-1px);
   }
 
   .ghost {
-    background: rgba(255, 255, 255, 0.9);
-    border-color: rgba(29, 26, 22, 0.12);
+    background: rgba(var(--fw-ice-rgb), 0.9);
+    border-color: rgba(var(--fw-frost-rgb), 0.9);
+    color: var(--fw-deep);
+    transition: background-color 0.15s ease, transform 0.15s ease;
+  }
+
+  .ghost:hover {
+    background: rgba(var(--fw-sky-rgb), 0.35);
+    transform: translateY(-1px);
   }
 </style>
