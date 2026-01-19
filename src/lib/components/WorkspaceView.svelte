@@ -39,6 +39,13 @@
   ] as const;
 
   const DEFAULT_QUERY_LIMIT = 50;
+  const BOTTOM_PANEL_STORAGE_KEY = "firewhale:bottom-panel-height";
+  const DEFAULT_QUERY_PANEL_HEIGHT = 280;
+  const DEFAULT_BOTTOM_PANEL_HEIGHT = 360;
+  const MIN_BOTTOM_PANEL_HEIGHT = 220;
+  const MIN_QUERY_PANEL_HEIGHT = 240;
+  const RESIZER_HEIGHT = 12;
+  const RESIZE_STEP = 24;
 
   let bottomTab = $state<(typeof bottomTabs)[number]["id"]>("result");
   let workspaceLoading = $state(false);
@@ -49,9 +56,14 @@
   let newCollectionPath = $state("");
   let collectionError = $state("");
   let collectionFilter = $state("");
+  let bottomPanelHeight = $state(DEFAULT_BOTTOM_PANEL_HEIGHT);
+  let isResizing = $state(false);
   let runStates = $state<Record<string, QueryRunState>>({});
   let runLogs = $state<Record<string, QueryLog[]>>({});
   let runSequence = $state(0);
+  let panelsEl = $state<HTMLDivElement | null>(null);
+  let resizeStartY = 0;
+  let resizeStartHeight = 0;
   let contextMenu = $state<ContextMenuState>({
     open: false,
     x: 0,
@@ -157,6 +169,76 @@
   let documentReadyUnlisten: UnlistenFn | null = null;
   let documentUpdateUnlisten: UnlistenFn | null = null;
 
+  function parseStoredHeight(value: string | null): number | null {
+    if (!value) return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+  }
+
+  function getMaxBottomPanelHeight(): number {
+    if (!panelsEl) return Number.POSITIVE_INFINITY;
+    const available = panelsEl.clientHeight - RESIZER_HEIGHT;
+    if (available <= 0) return MIN_BOTTOM_PANEL_HEIGHT;
+    return Math.max(MIN_BOTTOM_PANEL_HEIGHT, available - MIN_QUERY_PANEL_HEIGHT);
+  }
+
+  function clampBottomPanelHeight(height: number): number {
+    const maxHeight = getMaxBottomPanelHeight();
+    return Math.min(Math.max(height, MIN_BOTTOM_PANEL_HEIGHT), maxHeight);
+  }
+
+  function setBottomPanelHeight(height: number, persist = true): void {
+    const clamped = Math.round(clampBottomPanelHeight(height));
+    if (clamped === bottomPanelHeight) {
+      if (persist && typeof window !== "undefined") {
+        window.localStorage.setItem(BOTTOM_PANEL_STORAGE_KEY, String(clamped));
+      }
+      return;
+    }
+    bottomPanelHeight = clamped;
+    if (!persist || typeof window === "undefined") return;
+    window.localStorage.setItem(BOTTOM_PANEL_STORAGE_KEY, String(clamped));
+  }
+
+  function computeDefaultBottomPanelHeight(): number {
+    if (!panelsEl) return DEFAULT_BOTTOM_PANEL_HEIGHT;
+    const available = panelsEl.clientHeight - RESIZER_HEIGHT;
+    if (available <= 0) return DEFAULT_BOTTOM_PANEL_HEIGHT;
+    return clampBottomPanelHeight(available - DEFAULT_QUERY_PANEL_HEIGHT);
+  }
+
+  function handleResizerPointerDown(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId);
+    isResizing = true;
+    resizeStartY = event.clientY;
+    resizeStartHeight = bottomPanelHeight;
+  }
+
+  function handleResizerPointerMove(event: PointerEvent): void {
+    if (!isResizing) return;
+    event.preventDefault();
+    const delta = event.clientY - resizeStartY;
+    const nextHeight = resizeStartHeight - delta;
+    setBottomPanelHeight(nextHeight, false);
+  }
+
+  function handleResizerPointerUp(event: PointerEvent): void {
+    if (!isResizing) return;
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
+    isResizing = false;
+    setBottomPanelHeight(bottomPanelHeight);
+  }
+
+  function handleResizerKeydown(event: KeyboardEvent): void {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const delta = event.key === "ArrowUp" ? RESIZE_STEP : -RESIZE_STEP;
+    setBottomPanelHeight(bottomPanelHeight + delta);
+  }
+
   onMount(() => {
     let currentConnection: string | null = null;
 
@@ -173,6 +255,10 @@
       workspaceLoading = true;
       await loadWorkspaceForConnection(nextId);
       workspaceLoading = false;
+      await tick();
+      if (panelsEl) {
+        setBottomPanelHeight(bottomPanelHeight, false);
+      }
     });
 
     const unsubscribeConnection = activeConnection.subscribe((connection) => {
@@ -230,6 +316,28 @@
       if (messageHandler && typeof window !== "undefined") {
         window.removeEventListener("message", messageHandler);
       }
+    };
+  });
+
+  onMount(() => {
+    if (typeof window === "undefined") return;
+
+    const storedHeight = parseStoredHeight(
+      window.localStorage.getItem(BOTTOM_PANEL_STORAGE_KEY)
+    );
+
+    void tick().then(() => {
+      const initialHeight = storedHeight ?? computeDefaultBottomPanelHeight();
+      setBottomPanelHeight(initialHeight);
+    });
+
+    const handleResize = () => {
+      setBottomPanelHeight(bottomPanelHeight, false);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
     };
   });
 
@@ -917,143 +1025,157 @@
         <button class="tab-add" onclick={createNewTab}>+</button>
       </div>
 
-      <section class="query-panel">
-        <div class="panel-header">
-          <h3>Query</h3>
-          <div class="panel-meta">
-            <span class="status muted">
-              {$activeTab?.collectionPath || "Select a collection"}
-            </span>
-            <button
-              class="primary run-button"
-              type="button"
-              onclick={() => runQuery()}
-              disabled={!$activeTab || activeRunState.status === "running"}
-              title="Run (Cmd/Ctrl+Enter)"
-            >
-              {activeRunState.status === "running" ? "Running..." : "Run"}
-            </button>
-            <button
-              class="ghost format-button"
-              type="button"
-              onclick={formatActiveQuery}
-              disabled={!$activeTab}
-              title="Format (Cmd/Ctrl+Shift+F or Shift+Alt+F)"
-            >
-              Format
-            </button>
+      <div class="workspace-panels" bind:this={panelsEl} class:resizing={isResizing}>
+        <section class="query-panel">
+          <div class="panel-header">
+            <h3>Query</h3>
+            <div class="panel-meta">
+              <span class="status muted">
+                {$activeTab?.collectionPath || "Select a collection"}
+              </span>
+              <button
+                class="primary run-button"
+                type="button"
+                onclick={() => runQuery()}
+                disabled={!$activeTab || activeRunState.status === "running"}
+                title="Run (Cmd/Ctrl+Enter)"
+              >
+                {activeRunState.status === "running" ? "Running..." : "Run"}
+              </button>
+              <button
+                class="ghost format-button"
+                type="button"
+                onclick={formatActiveQuery}
+                disabled={!$activeTab}
+                title="Format (Cmd/Ctrl+Shift+F or Shift+Alt+F)"
+              >
+                Format
+              </button>
+            </div>
           </div>
-        </div>
-        {#if $activeTab}
-          <QueryEditor
-            value={$activeTab.queryText}
-            collections={$collections}
-            fieldStats={$fieldStats}
-            collectionPath={$activeTab.collectionPath}
-            onChange={handleQueryInput}
-            onFormat={formatActiveQuery}
-            onRun={() => runQuery()}
-          />
-        {:else}
-          <div class="editor editor-empty">Select a collection to begin.</div>
-        {/if}
-      </section>
+          {#if $activeTab}
+            <QueryEditor
+              value={$activeTab.queryText}
+              collections={$collections}
+              fieldStats={$fieldStats}
+              collectionPath={$activeTab.collectionPath}
+              onChange={handleQueryInput}
+              onFormat={formatActiveQuery}
+              onRun={() => runQuery()}
+            />
+          {:else}
+            <div class="editor editor-empty">Select a collection to begin.</div>
+          {/if}
+        </section>
 
-      <section class="bottom-panel">
-        <div class="bottom-tabs">
-          {#each bottomTabs as tabOption (tabOption.id)}
-            <button
-              class={`bottom-tab ${bottomTab === tabOption.id ? "active" : ""}`}
-              onclick={() => (bottomTab = tabOption.id)}
-            >
-              {tabOption.label}
-            </button>
-          {/each}
-        </div>
-        <div class="bottom-content">
-          {#if bottomTab === "result"}
-            {#if activeRunState.status === "running"}
-              <div class="panel-card">Running query...</div>
-            {:else if activeRunState.status === "error"}
-              <div class="panel-card panel-error">
-                <strong>Query failed.</strong>
-                <div>{activeRunState.error}</div>
-              </div>
-            {:else if activeRunState.status === "success"}
-              {#if activeRunState.rows.length === 0}
-                <div class="panel-card">No results found.</div>
-              {:else}
-                <div class="result-summary">
-                  {activeRunState.rows.length} row(s)
-                  {#if activeRunState.durationMs !== undefined}
-                    <span>· {activeRunState.durationMs} ms</span>
-                  {/if}
+        <button
+          class="panel-resizer"
+          aria-label="Resize panels"
+          type="button"
+          tabindex="0"
+          onpointerdown={handleResizerPointerDown}
+          onpointermove={handleResizerPointerMove}
+          onpointerup={handleResizerPointerUp}
+          onpointercancel={handleResizerPointerUp}
+          onkeydown={handleResizerKeydown}
+        ></button>
+
+        <section class="bottom-panel" style={`height: ${bottomPanelHeight}px;`}>
+          <div class="bottom-tabs">
+            {#each bottomTabs as tabOption (tabOption.id)}
+              <button
+                class={`bottom-tab ${bottomTab === tabOption.id ? "active" : ""}`}
+                onclick={() => (bottomTab = tabOption.id)}
+              >
+                {tabOption.label}
+              </button>
+            {/each}
+          </div>
+          <div class="bottom-content">
+            {#if bottomTab === "result"}
+              {#if activeRunState.status === "running"}
+                <div class="panel-card">Running query...</div>
+              {:else if activeRunState.status === "error"}
+                <div class="panel-card panel-error">
+                  <strong>Query failed.</strong>
+                  <div>{activeRunState.error}</div>
                 </div>
-                <div class="result-table-wrap">
-                  <table class="result-table">
-                    <thead>
-                      <tr>
-                        {#each activeColumns as column (column)}
-                          <th>{column}</th>
-                        {/each}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {#each activeRunState.rows as row, rowIndex (row.id ?? rowIndex)}
-                        <tr
-                          class="result-row"
-                          oncontextmenu={(event) => openRowContextMenu(event, row)}
-                          ondblclick={() => openJsonViewerWindow(row)}
-                        >
+              {:else if activeRunState.status === "success"}
+                {#if activeRunState.rows.length === 0}
+                  <div class="panel-card">No results found.</div>
+                {:else}
+                  <div class="result-summary">
+                    {activeRunState.rows.length} row(s)
+                    {#if activeRunState.durationMs !== undefined}
+                      <span>· {activeRunState.durationMs} ms</span>
+                    {/if}
+                  </div>
+                  <div class="result-table-wrap">
+                    <table class="result-table">
+                      <thead>
+                        <tr>
                           {#each activeColumns as column (column)}
-                            <td>{formatCell(row[column])}</td>
+                            <th>{column}</th>
                           {/each}
                         </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                </div>
-                <div class="result-pagination">
-                  <button
-                    class="ghost"
-                    type="button"
-                    onclick={runPreviousPage}
-                    disabled={activeRunState.pageIndex <= 0 || activeRunState.status !== "success"}
-                  >
-                    Previous
-                  </button>
-                  <div class="page-indicator">
-                    Page {activeRunState.pageIndex + 1}
+                      </thead>
+                      <tbody>
+                        {#each activeRunState.rows as row, rowIndex (row.id ?? rowIndex)}
+                          <tr
+                            class="result-row"
+                            oncontextmenu={(event) => openRowContextMenu(event, row)}
+                            ondblclick={() => openJsonViewerWindow(row)}
+                          >
+                            {#each activeColumns as column (column)}
+                              <td>{formatCell(row[column])}</td>
+                            {/each}
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
                   </div>
-                  <button
-                    class="ghost"
-                    type="button"
-                    onclick={runNextPage}
-                    disabled={!activeRunState.hasNextPage || activeRunState.status !== "success"}
-                  >
-                    Next
-                  </button>
-                </div>
+                  <div class="result-pagination">
+                    <button
+                      class="ghost"
+                      type="button"
+                      onclick={runPreviousPage}
+                      disabled={activeRunState.pageIndex <= 0 || activeRunState.status !== "success"}
+                    >
+                      Previous
+                    </button>
+                    <div class="page-indicator">
+                      Page {activeRunState.pageIndex + 1}
+                    </div>
+                    <button
+                      class="ghost"
+                      type="button"
+                      onclick={runNextPage}
+                      disabled={!activeRunState.hasNextPage || activeRunState.status !== "success"}
+                    >
+                      Next
+                    </button>
+                  </div>
+                {/if}
+              {:else}
+                <div class="panel-card">Run a query to see results.</div>
               {/if}
             {:else}
-              <div class="panel-card">Run a query to see results.</div>
+              {#if activeRunLogs.length === 0}
+                <div class="panel-card">Console logs will appear here.</div>
+              {:else}
+                <div class="console-list">
+                  {#each activeRunLogs as log (log.id)}
+                    <div class={`console-line ${log.level}`}>
+                      <span class="console-time">{formatTimestamp(log.timestamp)}</span>
+                      <span>{log.message}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
             {/if}
-          {:else}
-            {#if activeRunLogs.length === 0}
-              <div class="panel-card">Console logs will appear here.</div>
-            {:else}
-              <div class="console-list">
-                {#each activeRunLogs as log (log.id)}
-                  <div class={`console-line ${log.level}`}>
-                    <span class="console-time">{formatTimestamp(log.timestamp)}</span>
-                    <span>{log.message}</span>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          {/if}
-        </div>
-      </section>
+          </div>
+        </section>
+      </div>
     </section>
   </div>
   {#if contextMenu.open}
@@ -1293,7 +1415,7 @@
 
   .workspace-main {
     display: grid;
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr);
     gap: 16px;
     padding: 24px;
     height: 100%;
@@ -1389,6 +1511,57 @@
     cursor: pointer;
   }
 
+  .workspace-panels {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .workspace-panels.resizing {
+    user-select: none;
+  }
+
+  .panel-resizer {
+    height: 12px;
+    display: grid;
+    place-items: center;
+    cursor: row-resize;
+    touch-action: none;
+    width: 100%;
+    border: none;
+    background: transparent;
+    padding: 0;
+  }
+
+  .panel-resizer::after {
+    content: "";
+    width: 44px;
+    height: 3px;
+    border-radius: 999px;
+    background: rgba(var(--fw-frost-rgb), 0.9);
+    transition: background-color 0.15s ease, width 0.15s ease;
+  }
+
+  .panel-resizer:hover::after {
+    background: rgba(var(--fw-whale-rgb), 0.55);
+    width: 54px;
+  }
+
+  .panel-resizer:focus-visible {
+    outline: none;
+  }
+
+  .panel-resizer:focus-visible::after {
+    background: rgba(var(--fw-whale-rgb), 0.75);
+    width: 54px;
+  }
+
+  .workspace-panels.resizing .panel-resizer::after {
+    background: rgba(var(--fw-whale-rgb), 0.75);
+  }
+
   .query-panel,
   .bottom-panel {
     background: rgba(var(--fw-ice-rgb), 0.9);
@@ -1402,7 +1575,8 @@
   }
 
   .query-panel {
-    height: 100%;
+    flex: 1 1 auto;
+    min-height: 240px;
   }
 
   .panel-header {
@@ -1456,7 +1630,8 @@
   }
 
   .bottom-panel {
-    min-height: 200px;
+    flex: 0 0 auto;
+    min-height: 220px;
   }
 
   .bottom-tabs {
