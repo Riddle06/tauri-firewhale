@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "firewhale",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "identifier": "com.rlee.tauri-firewhale",
   "build": {
     "beforeDevCommand": "bun run dev",
