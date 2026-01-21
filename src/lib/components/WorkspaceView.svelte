@@ -1666,7 +1666,9 @@
   .bottom-content {
     flex: 1;
     min-height: 0;
-    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     min-width: 0;
   }
 
@@ -1677,6 +1679,8 @@
     border: 1px dashed rgba(var(--fw-frost-rgb), 0.9);
     background: rgba(var(--fw-ice-rgb), 0.75);
     color: var(--fw-slate);
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .panel-error {
@@ -1697,6 +1701,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    flex: 0 0 auto;
   }
 
   .page-indicator {
@@ -1710,9 +1715,10 @@
     border: 1px solid rgba(var(--fw-frost-rgb), 0.9);
     background: rgba(var(--fw-ice-rgb), 0.95);
     overflow: auto;
-    max-height: clamp(220px, 40vh, 420px);
+    flex: 1 1 auto;
     max-width: 100%;
     min-width: 0;
+    min-height: 0;
   }
 
   .result-table {
@@ -1763,6 +1769,10 @@
     font-family: "IBM Plex Mono", "Fira Mono", monospace;
     font-size: 0.8rem;
     color: rgba(var(--fw-slate-rgb), 0.9);
+    align-content: start;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
   }
 
   .console-line {
