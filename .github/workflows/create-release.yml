@@ -12,8 +12,38 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          git fetch --tags --force
+          current_tag="${GITHUB_REF_NAME}"
+          prev_tag="$(git describe --tags --abbrev=0 "${current_tag}^" 2>/dev/null || true)"
+          if [ -n "$prev_tag" ]; then
+            header="Commits since ${prev_tag}"
+            log="$(git log --pretty=format:'- %s (%h)' "${prev_tag}..${current_tag}")"
+          else
+            header="Commits in ${current_tag}"
+            log="$(git log --pretty=format:'- %s (%h)' "${current_tag}")"
+          fi
+          if [ -z "$log" ]; then
+            log="- No commits found."
+          fi
+          {
+            echo "body<<'EOF'"
+            echo "$header"
+            echo ""
+            echo "$log"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          body: ${{ steps.release_notes.outputs.body }}
