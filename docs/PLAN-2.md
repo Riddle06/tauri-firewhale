@@ -1,7 +1,7 @@
 1) 測試目標與原則
 	•	所有 PR / 每次 push 都必須跑測試且通過（不通過就不能 merge / 不能產出 release artifact）
 	•	測試分層：Unit → Integration → E2E
-	•	針對你產品的高風險點（Completion 速度、Tab/State persist、Missing index fallback）一定要有測試覆蓋
+	•	針對你產品的高風險點（Completion 速度、Tab/State persist、Client-side pagination mode / Missing index fallback）一定要有測試覆蓋
 
 ⸻
 
@@ -15,6 +15,7 @@ A. Unit tests（快、每天跑、最重要）
 	•	completion engine（給定游標位置 → suggestions）
 	•	error classifier（missing index / permission / invalid argument）
 	•	fallback plan builder（原 AST → fallback plan）
+	•	client-side pagination 模式（count threshold、前端排序/分頁、where guard）
 	•	state reducer / store（tabs / workspace / persist）
 
 工具建議（Bun 友好）
@@ -28,7 +29,7 @@ B. Integration tests（模組串接，仍然要快）
 範圍
 	•	Query runner + Firestore emulator：
 	•	db.collection().where().orderBy().limit().get() 能跑
-	•	pagination / cursor（若你後面做）
+	•	client-side pagination 模式：count query + confirm + 前端排序/分頁
 	•	缺 index 流程：能捕捉錯誤 → 產出 fallback plan（至少測到 “顯示 fallback 選項”）
 	•	Storage layer：
 	•	profiles/workspace state 寫入/讀取一致
@@ -46,6 +47,7 @@ C. E2E tests（最慢，但能防「真的壞了」）
 	•	App 啟動 → 建立 connection（指 emulator）→ 開 tab → 輸入 query（Firestore chain）→ Run → 看到結果
 	•	Tab 行為：+ 新增/切換/關閉
 	•	Persist：關閉 app → 重新開啟 → tabs & queries 還在
+	•	Client-side pagination mode：啟用 → count 警告 → confirm → 分頁結果
 	•	Missing index UX：觸發錯誤 → 看到 fallback 卡片 → confirm → 出結果（若 emulator 不易重現 index 行為，可用 mock error 注入）
 
 工具（桌面 app）
@@ -121,6 +123,11 @@ Tabs / Persist
 	•	dev 的 tabs 不會出現在 prod
 	•	重啟後 state 恢復一致
 
+Client-side pagination mode
+	•	啟用時需至少一個 where，否則阻擋
+	•	count > 1000 需先確認才執行
+	•	orderBy/limit 由前端套用，分頁結果正確
+
 Missing index fallback（邏輯至少要測）
 	•	error classifier 能把 “missing index” 分出來
 	•	fallback plan 生成規則正確（移除 orderBy / 設定 cap）
@@ -156,9 +163,9 @@ Milestone 3.2（Edit document）
 	•	Integration：更新 doc 後結果列資料更新（emulator 或 mock）
 	•	Manual：Edit 視窗語法高亮、Save/Cancel 行為
 
-Milestone 4（Missing index fallback）
-	•	✅ Unit：error classifier + fallback plan builder
-	•	✅ Integration/Mock：runner 接到 missing index → UI state 進入 fallback 模式
+Milestone 4（Client-side pagination mode）
+	•	✅ Unit：client-side 排序/分頁、where guard、count threshold
+	•	✅ Integration/Mock：count query + confirm gating；前端分頁結果正確
 
 Milestone 5（多 connection 同時開）
 	•	✅ Unit：tab 路由到正確 connectionId

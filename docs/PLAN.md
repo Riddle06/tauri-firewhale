@@ -324,22 +324,24 @@ Milestone 3.2：Query Result 強化（Edit Document）
 
 ⸻
 
-Milestone 4：Missing Index Fallback（你差異化的亮點）
+Milestone 4：Client-side pagination mode
 
 目標
-	•	missing index error 偵測
-	•	提示建立 index + fallback confirm
-	•	fallback 執行 where + client sort（含 fetchCap）
+	•	Run 下方加入 Client-side pagination mode toggle
+	•	啟用時先做 count query，超過門檻顯示警告；只帶 where 查詢，前端做排序/分頁
+	•	至少一個 where 條件才允許執行
 
 交付物
-	•	Error classifier
-	•	Fallback plan builder + executor
-	•	UI confirm panel
+	•	Checkbox toggle + per-tab 狀態
+	•	Count query + warning confirm dialog（>1000）
+	•	Client-side sort + pagination pipeline（忽略 orderBy/limit）
+	•	Where guard（無 where 禁止執行）
 
 驗收
-	•	人為製造缺 index query：
-	•	先報錯 → UI 顯示 fallback 選項
-	•	Confirm 後成功顯示結果（並提示限制）
+	•	啟用後先做 count，>1000 會彈警告，確認才執行
+	•	orderBy/limit 由前端套用，分頁結果一致
+	•	無 where 時會阻擋執行並提示原因
+	•	關閉 toggle 時維持原本查詢行為
 
 ⸻
 

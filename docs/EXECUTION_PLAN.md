@@ -256,29 +256,48 @@
 
 ---
 
-## Milestone 4：Missing Index Handler
+## Milestone 4：Client-side pagination mode 
 狀態：TODO
 
 目標
-- 缺 index 時提示建立 index，並提供 fallback
+- 於 `Run` Button 的下方多一個 checkbox button, named: Client-side pagination mode
+- 如果 Client-side pagination mode 是 enable 的, 在 query firestore 就會略過 orderBy 跟 Limit 的參數,然後透過前端做 order by 跟 pagination
+- 另外就是該功能 enable 之後, 會先用 count query 數量, 如果數量大於 1000 (這個未來可以調整), 會先跳出警告: 
+> You are currently using client-side pagination.
+> This action will fetch approximately {xx} records in a single request.
+> Loading this amount of data may take longer and result in higher query costs.
+> Are you sure you want to continue?
+  - 如果 user 點擊確認才會 query
+  - 另外這個 query 有一個條件就是至少要下一種 where condition
+
 
 交付物
-- [ ] Error classifier（missing index / permission / invalid argument）
-- [ ] Fallback plan builder + executor
-- [ ] UI 確認卡片與警告文案
+- [ ] Client-side pagination mode checkbox（Run 下方）+ per-tab 狀態
+- [ ] Count query + threshold 警告視窗（>1000）
+- [ ] Client-side 排序 + 分頁 pipeline（忽略 orderBy/limit）
+- [ ] Query guard：至少一個 where 才可執行
+- [ ] 分頁切換使用前端資料（不重新查 Firestore）
 
 任務
-- [ ] missing index error pattern parsing
-- [ ] fallback（保留 where、移除 orderBy、設 fetchCap）
-- [ ] client-side sort（標示限制）
+- [ ] 定義 client-side pagination 設定與儲存（per-tab）
+- [ ] UI：Run 下方加入 checkbox 與說明文案
+- [ ] Firestore：新增 count query（aggregation）與 threshold 常數
+- [ ] UI：count 超過 threshold 時彈警告，確認才繼續
+- [ ] Runner：啟用時移除 orderBy/limit，抓取完整結果，前端套用排序/分頁
+- [ ] 驗證：無 where 時阻擋執行並回傳可讀錯誤
 
 驗收條件
-- [ ] 觸發缺 index → UI 顯示 fallback 選項
-- [ ] Confirm 後能跑出結果並顯示限制提示
+- [ ] Run 下方顯示 Client-side pagination mode checkbox，切換僅影響該 tab
+- [ ] 啟用時 Firestore request 不帶 orderBy/limit，前端套用排序/分頁結果正確
+- [ ] count > 1000 先顯示警告，確認才送出查詢；取消不執行
+- [ ] 啟用且無 where 時會阻擋執行並提示原因
+- [ ] 關閉時維持原本 server-side orderBy/limit/page 行為
 
 測試門檻
-- [ ] Unit：error classifier + fallback plan
-- [ ] Integration/Mock：runner 接到 missing index 進入 fallback 模式
+- [ ] Unit：client-side 排序/分頁、orderBy/limit 移除、where guard
+- [ ] Integration：count query + confirm gating；client-side 分頁結果正確
+- [ ] Manual：警告文案與 checkbox 位置/交互符合描述
+
 
 
 ---
