@@ -22,12 +22,19 @@
     setCollections,
     setActiveTab,
     tabs,
+    updateClientPagination,
     updateCollectionPath,
     updateQueryText
   } from "$lib/stores/workspace";
   import { normalizeCollectionPath } from "$lib/utils/state";
   import { parseQueryChain, validateQueryAst } from "$lib/query/parser";
-  import { fetchCollectionsForConnection, runFirestoreQuery } from "$lib/query/firestore";
+  import type { OrderByClause, QueryAst } from "$lib/query/types";
+  import {
+    fetchCollectionsForConnection,
+    runFirestoreCountQuery,
+    runFirestoreQuery,
+    runFirestoreQueryAll
+  } from "$lib/query/firestore";
   import type { ConnectionProfile } from "$lib/models";
   import QueryEditor from "$lib/components/QueryEditor.svelte";
 
@@ -39,6 +46,7 @@
   ] as const;
 
   const DEFAULT_QUERY_LIMIT = 50;
+  const CLIENT_PAGINATION_THRESHOLD = 100;
   const BOTTOM_PANEL_STORAGE_KEY = "firewhale:bottom-panel-height";
   const DEFAULT_QUERY_PANEL_HEIGHT = 280;
   const DEFAULT_BOTTOM_PANEL_HEIGHT = 360;
@@ -83,6 +91,9 @@
     pageIndex: number;
     pageSize: number;
     hasNextPage: boolean;
+    clientPagination?: boolean;
+    clientRows?: Record<string, unknown>[];
+    totalRows?: number;
   };
 
   type QueryLog = {
@@ -90,6 +101,12 @@
     level: "info" | "error";
     message: string;
     timestamp: number;
+  };
+
+  type PendingClientRun = {
+    tabId: string;
+    ast: QueryAst;
+    pageIndex: number;
   };
 
   type DocumentViewPayload = {
@@ -136,7 +153,9 @@
     rows: [],
     pageIndex: 0,
     pageSize: 0,
-    hasNextPage: false
+    hasNextPage: false,
+    clientPagination: false,
+    clientRows: []
   };
 
   const activeRunState = $derived.by<QueryRunState>(() => {
@@ -168,6 +187,9 @@
 
   let documentReadyUnlisten: UnlistenFn | null = null;
   let documentUpdateUnlisten: UnlistenFn | null = null;
+  let clientPaginationWarningOpen = $state(false);
+  let clientPaginationWarningCount = $state(0);
+  let clientPaginationPending = $state<PendingClientRun | null>(null);
 
   function parseStoredHeight(value: string | null): number | null {
     if (!value) return null;
@@ -503,6 +525,216 @@
     updateQueryText($activeTab.id, nextValue);
   }
 
+  function resolveClientPageSize(limit?: number): number {
+    if (typeof limit === "number" && Number.isFinite(limit)) {
+      return Math.max(1, Math.floor(limit));
+    }
+    return DEFAULT_QUERY_LIMIT;
+  }
+
+  function compareValues(left: unknown, right: unknown): number {
+    if (left == null && right == null) return 0;
+    if (left == null) return 1;
+    if (right == null) return -1;
+    if (left === right) return 0;
+    return left > right ? 1 : -1;
+  }
+
+  function sortRows(
+    rows: Record<string, unknown>[],
+    orderBy: OrderByClause[]
+  ): Record<string, unknown>[] {
+    if (orderBy.length === 0) return rows;
+    return [...rows].sort((left, right) => {
+      for (const order of orderBy) {
+        const dir = order.dir === "desc" ? -1 : 1;
+        const diff = compareValues(left[order.field], right[order.field]);
+        if (diff !== 0) return diff * dir;
+      }
+      return 0;
+    });
+  }
+
+  function applyClientPage(
+    tabId: string,
+    nextPageIndex: number
+  ): void {
+    const current = runStates[tabId];
+    if (!current?.clientPagination || !current.clientRows) return;
+    const pageSize = current.pageSize || DEFAULT_QUERY_LIMIT;
+    const totalRows = current.clientRows.length;
+    const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+    const clampedIndex = Math.min(Math.max(nextPageIndex, 0), totalPages - 1);
+    const start = clampedIndex * pageSize;
+    const pageRows = current.clientRows.slice(start, start + pageSize);
+    runStates = {
+      ...runStates,
+      [tabId]: {
+        ...current,
+        rows: pageRows,
+        pageIndex: clampedIndex,
+        hasNextPage: (clampedIndex + 1) * pageSize < totalRows
+      }
+    };
+  }
+
+  function handleClientPaginationToggle(event: Event): void {
+    if (!$activeTab) return;
+    const target = event.target as HTMLInputElement;
+    updateClientPagination($activeTab.id, target.checked);
+  }
+
+  function clearClientPaginationWarning(): void {
+    clientPaginationWarningOpen = false;
+    clientPaginationWarningCount = 0;
+    clientPaginationPending = null;
+  }
+
+  async function confirmClientPagination(): Promise<void> {
+    const pending = clientPaginationPending;
+    clearClientPaginationWarning();
+    if (!pending) return;
+    await runClientPaginationQuery(pending.ast, pending.tabId, pending.pageIndex);
+  }
+
+  async function runClientPaginationQuery(
+    ast: QueryAst,
+    tabId: string,
+    pageIndex: number
+  ): Promise<void> {
+    const connection = $activeConnection;
+    if (!connection) {
+      setRunError(tabId, "No active connection.");
+      return;
+    }
+    runStates = {
+      ...runStates,
+      [tabId]: {
+        status: "running",
+        rows: [],
+        pageIndex,
+        pageSize: resolveClientPageSize(ast.limit),
+        hasNextPage: false,
+        clientPagination: true,
+        clientRows: []
+      }
+    };
+    bottomTab = "result";
+    pushLog(tabId, "info", "Running query...");
+
+    let queryResult;
+    try {
+      queryResult = await runFirestoreQueryAll(connection, {
+        ...ast,
+        orderBy: [],
+        limit: undefined
+      });
+    } catch (error) {
+      setRunError(
+        tabId,
+        error instanceof Error ? error.message : "Failed to run query."
+      );
+      return;
+    }
+
+    const pageSize = resolveClientPageSize(ast.limit);
+    const sortedRows = sortRows(queryResult.rows, ast.orderBy);
+    const totalRows = sortedRows.length;
+    const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+    const clampedPageIndex = Math.min(Math.max(pageIndex, 0), totalPages - 1);
+    const start = clampedPageIndex * pageSize;
+    const pageRows = sortedRows.slice(start, start + pageSize);
+    const warnings = [...queryResult.warnings];
+    if (ast.limit === undefined) {
+      warnings.push(`No limit specified. Using default page size ${pageSize}.`);
+    }
+
+    runStates = {
+      ...runStates,
+      [tabId]: {
+        status: "success",
+        rows: pageRows,
+        warnings,
+        durationMs: queryResult.durationMs,
+        pageIndex: clampedPageIndex,
+        pageSize,
+        hasNextPage: (clampedPageIndex + 1) * pageSize < totalRows,
+        clientPagination: true,
+        clientRows: sortedRows,
+        totalRows
+      }
+    };
+    if (sortedRows.length > 0) {
+      recordFieldStats(ast.collectionPath, sortedRows);
+    }
+    if (warnings.length > 0) {
+      for (const warning of warnings) {
+        pushLog(tabId, "info", warning);
+      }
+    }
+    pushLog(tabId, "info", `Returned ${totalRows} row(s).`);
+  }
+
+  async function runServerPaginationQuery(
+    ast: QueryAst,
+    tabId: string,
+    pageIndex: number
+  ): Promise<void> {
+    const connection = $activeConnection;
+    if (!connection) {
+      setRunError(tabId, "No active connection.");
+      return;
+    }
+    runStates = {
+      ...runStates,
+      [tabId]: {
+        status: "running",
+        rows: [],
+        pageIndex,
+        pageSize: 0,
+        hasNextPage: false,
+        clientPagination: false,
+        clientRows: []
+      }
+    };
+    bottomTab = "result";
+    pushLog(tabId, "info", "Running query...");
+
+    let result;
+    try {
+      result = await runFirestoreQuery(connection, ast, { pageIndex });
+    } catch (error) {
+      setRunError(
+        tabId,
+        error instanceof Error ? error.message : "Failed to run query."
+      );
+      return;
+    }
+    runStates = {
+      ...runStates,
+      [tabId]: {
+        status: "success",
+        rows: result.rows,
+        warnings: result.warnings,
+        durationMs: result.durationMs,
+        pageIndex: result.pageIndex,
+        pageSize: result.pageSize,
+        hasNextPage: result.hasNextPage,
+        clientPagination: false,
+        clientRows: []
+      }
+    };
+    if (result.rows.length > 0) {
+      recordFieldStats(ast.collectionPath, result.rows);
+    }
+    if (result.warnings.length > 0) {
+      for (const warning of result.warnings) {
+        pushLog(tabId, "info", warning);
+      }
+    }
+    pushLog(tabId, "info", `Returned ${result.rows.length} row(s).`);
+  }
+
   async function runQuery(pageIndex = 0): Promise<void> {
     if (!$activeTab) return;
     if (!$activeConnection) {
@@ -511,19 +743,6 @@
     }
     const tabId = $activeTab.id;
     const queryText = $activeTab.queryText.trim();
-
-    runStates = {
-      ...runStates,
-      [tabId]: {
-        status: "running",
-        rows: [],
-        pageIndex,
-        pageSize: 0,
-        hasNextPage: false
-      }
-    };
-    bottomTab = "result";
-    pushLog(tabId, "info", "Running query...");
 
     const parsed = parseQueryChain(queryText);
     if (!parsed.ok) {
@@ -541,37 +760,35 @@
       updateCollectionPath(tabId, parsed.ast.collectionPath);
     }
 
-    let result;
-    try {
-      result = await runFirestoreQuery($activeConnection, parsed.ast, { pageIndex });
-    } catch (error) {
-      setRunError(
-        tabId,
-        error instanceof Error ? error.message : "Failed to run query."
-      );
+    clearClientPaginationWarning();
+    const clientPaginationEnabled = $activeTab.clientPagination ?? false;
+    if (clientPaginationEnabled && parsed.ast.where.length === 0) {
+      setRunError(tabId, "Client-side pagination mode requires at least one where clause.");
       return;
     }
-    runStates = {
-      ...runStates,
-      [tabId]: {
-        status: "success",
-        rows: result.rows,
-        warnings: result.warnings,
-        durationMs: result.durationMs,
-        pageIndex: result.pageIndex,
-        pageSize: result.pageSize,
-        hasNextPage: result.hasNextPage
+
+    if (clientPaginationEnabled) {
+      let totalCount: number;
+      try {
+        totalCount = await runFirestoreCountQuery($activeConnection, parsed.ast);
+      } catch (error) {
+        setRunError(
+          tabId,
+          error instanceof Error ? error.message : "Failed to count query results."
+        );
+        return;
       }
-    };
-    if (result.rows.length > 0) {
-      recordFieldStats(parsed.ast.collectionPath, result.rows);
-    }
-    if (result.warnings.length > 0) {
-      for (const warning of result.warnings) {
-        pushLog(tabId, "info", warning);
+      if (totalCount > CLIENT_PAGINATION_THRESHOLD) {
+        clientPaginationWarningCount = totalCount;
+        clientPaginationPending = { tabId, ast: parsed.ast, pageIndex };
+        clientPaginationWarningOpen = true;
+        return;
       }
+      await runClientPaginationQuery(parsed.ast, tabId, pageIndex);
+      return;
     }
-    pushLog(tabId, "info", `Returned ${result.rows.length} row(s).`);
+
+    await runServerPaginationQuery(parsed.ast, tabId, pageIndex);
   }
 
   function selectCollection(path: string): void {
@@ -602,12 +819,20 @@
   function runPreviousPage(): void {
     if (activeRunState.status !== "success") return;
     if (activeRunState.pageIndex <= 0) return;
+    if (activeRunState.clientPagination && $activeTab) {
+      applyClientPage($activeTab.id, activeRunState.pageIndex - 1);
+      return;
+    }
     void runQuery(activeRunState.pageIndex - 1);
   }
 
   function runNextPage(): void {
     if (activeRunState.status !== "success") return;
     if (!activeRunState.hasNextPage) return;
+    if (activeRunState.clientPagination && $activeTab) {
+      applyClientPage($activeTab.id, activeRunState.pageIndex + 1);
+      return;
+    }
     void runQuery(activeRunState.pageIndex + 1);
   }
 
@@ -890,6 +1115,11 @@
     event.preventDefault();
     closeHandler();
   }
+
+  function handleClientPaginationBackdropClick(event: MouseEvent): void {
+    if (event.currentTarget !== event.target) return;
+    clearClientPaginationWarning();
+  }
 </script>
 
 {#if !$activeConnectionId}
@@ -1029,23 +1259,34 @@
         <section class="query-panel">
           <div class="panel-header">
             <h3>Query</h3>
-            <div class="panel-meta">
-              <span class="status muted">
-                {$activeTab?.collectionPath || "Select a collection"}
-              </span>
-              <button
-                class="primary run-button"
-                type="button"
-                onclick={() => runQuery()}
-                disabled={!$activeTab || activeRunState.status === "running"}
-                title="Run (Cmd/Ctrl+Enter)"
-              >
-                {activeRunState.status === "running" ? "Running..." : "Run"}
-              </button>
-              <button
-                class="ghost format-button"
-                type="button"
-                onclick={formatActiveQuery}
+          <div class="panel-meta">
+            <span class="status muted">
+              {$activeTab?.collectionPath || "Select a collection"}
+            </span>
+              <div class="run-actions">
+                <label class="client-pagination-toggle">
+                  <input
+                    type="checkbox"
+                    checked={$activeTab?.clientPagination ?? false}
+                    onchange={handleClientPaginationToggle}
+                    disabled={!$activeTab}
+                  />
+                  <span>Client-side pagination mode</span>
+                </label>
+                <button
+                  class="primary run-button"
+                  type="button"
+                  onclick={() => runQuery()}
+                  disabled={!$activeTab || activeRunState.status === "running"}
+                  title="Run (Cmd/Ctrl+Enter)"
+                >
+                  {activeRunState.status === "running" ? "Running..." : "Run"}
+                </button>
+              </div>
+            <button
+              class="ghost format-button"
+              type="button"
+              onclick={formatActiveQuery}
                 disabled={!$activeTab}
                 title="Format (Cmd/Ctrl+Shift+F or Shift+Alt+F)"
               >
@@ -1178,6 +1419,39 @@
       </div>
     </section>
   </div>
+  {#if clientPaginationWarningOpen}
+    <div
+      class="confirm-backdrop"
+      role="button"
+      tabindex="0"
+      aria-label="Close confirmation"
+      onclick={handleClientPaginationBackdropClick}
+      onkeydown={(event) => handleBackdropKeydown(event, clearClientPaginationWarning)}
+    >
+      <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="client-pagination-title">
+        <div class="confirm-title" id="client-pagination-title">
+          You are currently using client-side pagination.
+        </div>
+        <div class="confirm-text">
+          This action will fetch approximately
+          <strong>{clientPaginationWarningCount.toLocaleString()}</strong>
+          records in a single request.
+        </div>
+        <div class="confirm-text">
+          Loading this amount of data may take longer and result in higher query costs.
+        </div>
+        <div class="confirm-text">Are you sure you want to continue?</div>
+        <div class="confirm-actions">
+          <button class="ghost" type="button" onclick={clearClientPaginationWarning}>
+            Cancel
+          </button>
+          <button class="primary" type="button" onclick={confirmClientPagination}>
+            Run query
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
   {#if contextMenu.open}
     <div
       class="context-menu-backdrop"
@@ -1594,6 +1868,34 @@
     justify-content: flex-end;
   }
 
+  .run-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .client-pagination-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    color: var(--fw-slate);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .client-pagination-toggle input {
+    accent-color: var(--fw-whale);
+  }
+
+  .client-pagination-toggle input:disabled {
+    cursor: not-allowed;
+  }
+
+  .client-pagination-toggle input:disabled + span {
+    opacity: 0.6;
+  }
+
   .panel-header h3 {
     margin: 0;
     font-size: 0.9rem;
@@ -1793,6 +2095,45 @@
   .console-time {
     font-size: 0.7rem;
     color: rgba(var(--fw-slate-rgb), 0.85);
+  }
+
+  .confirm-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    display: grid;
+    place-items: center;
+    background: rgba(var(--fw-ink-rgb), 0.35);
+    padding: 24px;
+  }
+
+  .confirm-modal {
+    width: min(520px, 92vw);
+    background: #fff;
+    border-radius: 18px;
+    border: 1px solid rgba(var(--fw-frost-rgb), 0.9);
+    box-shadow: 0 18px 36px rgba(var(--fw-ink-rgb), 0.2);
+    padding: 20px 22px;
+    display: grid;
+    gap: 10px;
+  }
+
+  .confirm-title {
+    font-weight: 600;
+    color: var(--fw-deep);
+  }
+
+  .confirm-text {
+    font-size: 0.85rem;
+    color: var(--fw-slate);
+    line-height: 1.5;
+  }
+
+  .confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 6px;
   }
 
   .context-menu-backdrop {

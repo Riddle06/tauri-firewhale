@@ -272,26 +272,26 @@
 
 
 交付物
-- [ ] Client-side pagination mode checkbox（Run 下方）+ per-tab 狀態
-- [ ] Count query + threshold 警告視窗（>1000）
-- [ ] Client-side 排序 + 分頁 pipeline（忽略 orderBy/limit）
-- [ ] Query guard：至少一個 where 才可執行
-- [ ] 分頁切換使用前端資料（不重新查 Firestore）
+- [x] Client-side pagination mode checkbox（Run 下方）+ per-tab 狀態
+- [x] Count query + threshold 警告視窗（>1000）
+- [x] Client-side 排序 + 分頁 pipeline（忽略 orderBy/limit）
+- [x] Query guard：至少一個 where 才可執行
+- [x] 分頁切換使用前端資料（不重新查 Firestore）
 
 任務
-- [ ] 定義 client-side pagination 設定與儲存（per-tab）
-- [ ] UI：Run 下方加入 checkbox 與說明文案
-- [ ] Firestore：新增 count query（aggregation）與 threshold 常數
-- [ ] UI：count 超過 threshold 時彈警告，確認才繼續
-- [ ] Runner：啟用時移除 orderBy/limit，抓取完整結果，前端套用排序/分頁
-- [ ] 驗證：無 where 時阻擋執行並回傳可讀錯誤
+- [x] 定義 client-side pagination 設定與儲存（per-tab）
+- [x] UI：Run 下方加入 checkbox 與說明文案
+- [x] Firestore：新增 count query（aggregation）與 threshold 常數
+- [x] UI：count 超過 threshold 時彈警告，確認才繼續
+- [x] Runner：啟用時移除 orderBy/limit，抓取完整結果，前端套用排序/分頁
+- [x] 驗證：無 where 時阻擋執行並回傳可讀錯誤
 
 驗收條件
-- [ ] Run 下方顯示 Client-side pagination mode checkbox，切換僅影響該 tab
-- [ ] 啟用時 Firestore request 不帶 orderBy/limit，前端套用排序/分頁結果正確
-- [ ] count > 1000 先顯示警告，確認才送出查詢；取消不執行
-- [ ] 啟用且無 where 時會阻擋執行並提示原因
-- [ ] 關閉時維持原本 server-side orderBy/limit/page 行為
+- [x] Run 下方顯示 Client-side pagination mode checkbox，切換僅影響該 tab
+- [x] 啟用時 Firestore request 不帶 orderBy/limit，前端套用排序/分頁結果正確
+- [x] count > 1000 先顯示警告，確認才送出查詢；取消不執行
+- [x] 啟用且無 where 時會阻擋執行並提示原因
+- [x] 關閉時維持原本 server-side orderBy/limit/page 行為
 
 測試門檻
 - [ ] Unit：client-side 排序/分頁、orderBy/limit 移除、where guard

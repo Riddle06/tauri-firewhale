@@ -272,12 +272,20 @@ export async function fetchCollectionsForConnection(
   return listCollectionIds(projectId, accessToken);
 }
 
-function buildStructuredQuery(ast: QueryAst, pageSize: number, pageIndex: number): Record<string, unknown> {
+type StructuredQueryOptions = {
+  pageSize?: number;
+  pageIndex?: number;
+  includeOrderBy?: boolean;
+  includeLimit?: boolean;
+};
+
+function buildStructuredQuery(
+  ast: QueryAst,
+  options: StructuredQueryOptions = {}
+): Record<string, unknown> {
   const { collectionId } = splitCollectionPath(ast.collectionPath);
   const structuredQuery: Record<string, unknown> = {
-    from: [{ collectionId }],
-    offset: pageIndex * pageSize,
-    limit: pageSize
+    from: [{ collectionId }]
   };
 
   const filter = buildFirestoreFilter(ast.where);
@@ -285,11 +293,18 @@ function buildStructuredQuery(ast: QueryAst, pageSize: number, pageIndex: number
     structuredQuery.where = filter;
   }
 
-  if (ast.orderBy.length > 0) {
+  if (options.includeOrderBy !== false && ast.orderBy.length > 0) {
     structuredQuery.orderBy = ast.orderBy.map((order) => ({
       field: { fieldPath: order.field },
       direction: order.dir === "desc" ? "DESCENDING" : "ASCENDING"
     }));
+  }
+
+  if (options.includeLimit !== false) {
+    const pageSize = options.pageSize ?? DEFAULT_PAGE_SIZE;
+    const pageIndex = options.pageIndex ?? 0;
+    structuredQuery.offset = pageIndex * pageSize;
+    structuredQuery.limit = pageSize;
   }
 
   return structuredQuery;
@@ -346,6 +361,24 @@ function parseRunQueryResponse(payload: unknown): Record<string, unknown>[] {
   return rows;
 }
 
+function parseCountResponse(payload: unknown): number {
+  if (!Array.isArray(payload)) return 0;
+  for (const entry of payload) {
+    const result = (entry as { result?: { aggregateFields?: Record<string, FirestoreValue> } }).result;
+    const fields = result?.aggregateFields;
+    if (!fields) continue;
+    const countField = fields.total ?? fields.count ?? Object.values(fields)[0];
+    if (!countField) continue;
+    const decoded = decodeFirestoreValue(countField);
+    if (typeof decoded === "number") return decoded;
+    if (typeof decoded === "string") {
+      const parsed = Number(decoded);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return 0;
+}
+
 export async function runFirestoreQuery(
   connection: ConnectionProfile,
   ast: QueryAst,
@@ -396,7 +429,7 @@ export async function runFirestoreQuery(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      structuredQuery: buildStructuredQuery(ast, pageSize, pageIndex)
+      structuredQuery: buildStructuredQuery(ast, { pageSize, pageIndex })
     })
   });
 
@@ -416,6 +449,117 @@ export async function runFirestoreQuery(
     pageSize,
     hasNextPage: rows.length === pageSize
   };
+}
+
+export async function runFirestoreQueryAll(
+  connection: ConnectionProfile,
+  ast: QueryAst
+): Promise<QueryRunResult> {
+  const start = Date.now();
+  const warnings: string[] = [];
+  const credentialPath = connection.auth.encryptedPayloadRef;
+  const serviceAccount = await loadServiceAccount(credentialPath);
+  if (
+    connection.projectId &&
+    serviceAccount.project_id &&
+    connection.projectId !== serviceAccount.project_id
+  ) {
+    throw new Error("Project ID does not match credential.");
+  }
+
+  const projectId = connection.projectId || serviceAccount.project_id;
+
+  if (!projectId) {
+    throw new Error("Project ID is missing.");
+  }
+
+  const accessToken = await getAccessToken(serviceAccount);
+  const { parentPath } = splitCollectionPath(ast.collectionPath);
+  const baseParent = parentPath
+    ? `projects/${projectId}/databases/(default)/documents/${parentPath}`
+    : `projects/${projectId}/databases/(default)/documents`;
+  const url = `https://firestore.googleapis.com/v1/${baseParent}:runQuery`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      structuredQuery: buildStructuredQuery(ast, {
+        includeLimit: false,
+        includeOrderBy: false
+      })
+    })
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Firestore request failed (${response.status}): ${message}`);
+  }
+
+  const payload = await response.json();
+  const rows = parseRunQueryResponse(payload);
+
+  return {
+    rows,
+    warnings,
+    durationMs: Date.now() - start
+  };
+}
+
+export async function runFirestoreCountQuery(
+  connection: ConnectionProfile,
+  ast: QueryAst
+): Promise<number> {
+  const credentialPath = connection.auth.encryptedPayloadRef;
+  const serviceAccount = await loadServiceAccount(credentialPath);
+  if (
+    connection.projectId &&
+    serviceAccount.project_id &&
+    connection.projectId !== serviceAccount.project_id
+  ) {
+    throw new Error("Project ID does not match credential.");
+  }
+
+  const projectId = connection.projectId || serviceAccount.project_id;
+
+  if (!projectId) {
+    throw new Error("Project ID is missing.");
+  }
+
+  const accessToken = await getAccessToken(serviceAccount);
+  const { parentPath } = splitCollectionPath(ast.collectionPath);
+  const baseParent = parentPath
+    ? `projects/${projectId}/databases/(default)/documents/${parentPath}`
+    : `projects/${projectId}/databases/(default)/documents`;
+  const url = `https://firestore.googleapis.com/v1/${baseParent}:runAggregationQuery`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      structuredAggregationQuery: {
+        structuredQuery: buildStructuredQuery(ast, {
+          includeLimit: false,
+          includeOrderBy: false
+        }),
+        aggregations: [{ alias: "total", count: {} }]
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Firestore request failed (${response.status}): ${message}`);
+  }
+
+  const payload = await response.json();
+  return parseCountResponse(payload);
 }
 
 export async function updateFirestoreDocument(

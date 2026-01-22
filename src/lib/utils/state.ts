@@ -26,6 +26,7 @@ export function createTabState(connectionId: string, collectionPath = ""): TabSt
     connectionId,
     collectionPath: normalized,
     queryText: "",
+    clientPagination: false,
     view: {}
   };
 }

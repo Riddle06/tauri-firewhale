@@ -169,6 +169,19 @@ export function updateQueryText(tabId: string, queryText: string): void {
   schedulePersist();
 }
 
+export function updateClientPagination(tabId: string, enabled: boolean): void {
+  workspace.update((current) => {
+    if (!current) return current;
+    return {
+      ...current,
+      tabs: current.tabs.map((tab) =>
+        tab.id === tabId ? { ...tab, clientPagination: enabled } : tab
+      )
+    };
+  });
+  schedulePersist();
+}
+
 export function updateCollectionPath(tabId: string, path: string): void {
   const normalized = normalizeCollectionPath(path);
   workspace.update((current) => {

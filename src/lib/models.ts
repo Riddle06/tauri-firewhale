@@ -25,6 +25,7 @@ export type TabState = {
   collectionPath: string;
   queryText: string;
   lastRunAt?: number;
+  clientPagination?: boolean;
   view?: TabViewState;
 };
 
