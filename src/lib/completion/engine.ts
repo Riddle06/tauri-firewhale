@@ -1,3 +1,4 @@
+import { WHERE_OPERATORS } from "$lib/query/types";
 import { normalizeCollectionPath } from "$lib/utils/state";
 import type {
   CompletionOptionData,
@@ -71,6 +72,27 @@ const chainMemberCompletions: CompletionOptionData[] = [
     detail: "get()",
     snippet: "get()"
   }
+];
+
+const whereOperatorCompletions: CompletionOptionData[] = WHERE_OPERATORS.map((op) => ({
+  label: op,
+  type: "operator"
+}));
+
+const whereOperatorSnippetCompletions: CompletionOptionData[] = WHERE_OPERATORS.map((op) => ({
+  label: op,
+  type: "operator",
+  snippet: `'${op}'`
+}));
+
+const orderByDirectionCompletions: CompletionOptionData[] = [
+  { label: "asc", type: "constant" },
+  { label: "desc", type: "constant" }
+];
+
+const orderByDirectionSnippetCompletions: CompletionOptionData[] = [
+  { label: "asc", type: "constant", snippet: "'asc'" },
+  { label: "desc", type: "constant", snippet: "'desc'" }
 ];
 
 function resolveCollectionFromText(text: string, fallback: string): string {
@@ -188,6 +210,48 @@ function fieldCompletion(
   };
 }
 
+function whereOperatorCompletion(before: string, pos: number): CompletionResultData | null {
+  const insideMatch =
+    /\bwhere\s*\(\s*['"][^'"]*['"]\s*,\s*['"]([^'"]*)$/.exec(before);
+  if (insideMatch) {
+    return {
+      from: pos - insideMatch[1].length,
+      options: whereOperatorCompletions,
+      validFor: "[\\w\\-<>=!]*"
+    };
+  }
+
+  const bareMatch = /\bwhere\s*\(\s*['"][^'"]*['"]\s*,\s*$/.exec(before);
+  if (!bareMatch) return null;
+
+  return {
+    from: pos,
+    options: whereOperatorSnippetCompletions,
+    validFor: "[\\w\\-<>=!]*"
+  };
+}
+
+function orderByDirectionCompletion(before: string, pos: number): CompletionResultData | null {
+  const insideMatch =
+    /\borderBy\s*\(\s*['"][^'"]*['"]\s*,\s*['"]([^'"]*)$/.exec(before);
+  if (insideMatch) {
+    return {
+      from: pos - insideMatch[1].length,
+      options: orderByDirectionCompletions,
+      validFor: "[\\w]*"
+    };
+  }
+
+  const bareMatch = /\borderBy\s*\(\s*['"][^'"]*['"]\s*,\s*$/.exec(before);
+  if (!bareMatch) return null;
+
+  return {
+    from: pos,
+    options: orderByDirectionSnippetCompletions,
+    validFor: "[\\w]*"
+  };
+}
+
 function keywordCompletion(
   before: string,
   pos: number,
@@ -213,6 +277,8 @@ export function getCompletionResult(
     dotCompletion(before, request.pos) ??
     collectionCompletion(before, request.pos, request.collections) ??
     fieldCompletion(before, request.pos, request.fieldStats, request.collectionPath) ??
+    whereOperatorCompletion(before, request.pos) ??
+    orderByDirectionCompletion(before, request.pos) ??
     keywordCompletion(before, request.pos, explicit)
   );
 }
