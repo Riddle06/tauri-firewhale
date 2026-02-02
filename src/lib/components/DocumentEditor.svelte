@@ -1,8 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { EditorState } from "@codemirror/state";
-  import { EditorView, lineNumbers } from "@codemirror/view";
+  import { EditorView, keymap, lineNumbers } from "@codemirror/view";
   import { json } from "@codemirror/lang-json";
+  import {
+    highlightSelectionMatches,
+    openSearchPanel,
+    searchKeymap
+  } from "@codemirror/search";
   import { vscodeDark } from "@uiw/codemirror-theme-vscode";
 
   const { value = "", readOnly = true, onChange = () => {} } = $props<{
@@ -14,6 +19,8 @@
   let editorRoot: HTMLDivElement | null = null;
   let view: EditorView | null = null;
   let isUpdating = false;
+  let keydownHandler: ((event: KeyboardEvent) => void) | null = null;
+  let searchObserver: MutationObserver | null = null;
 
   onMount(() => {
     if (!editorRoot) return;
@@ -23,6 +30,8 @@
         lineNumbers(),
         json(),
         vscodeDark,
+        highlightSelectionMatches(),
+        keymap.of([...searchKeymap]),
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
         EditorView.updateListener.of((update) => {
@@ -33,7 +42,49 @@
       ]
     });
     view = new EditorView({ state, parent: editorRoot });
+
+    const applySearchInputConfig = () => {
+      if (!view) return;
+      const inputs = view.dom.querySelectorAll(".cm-search input");
+      if (!inputs.length) return;
+      inputs.forEach((node) => {
+        if (!(node instanceof HTMLInputElement)) return;
+        if (node.dataset.fwSearchConfigured === "true") return;
+        node.setAttribute("autocapitalize", "off");
+        node.setAttribute("autocorrect", "off");
+        node.setAttribute("spellcheck", "false");
+        node.setAttribute("autocomplete", "off");
+        node.style.textTransform = "none";
+        node.dataset.fwSearchConfigured = "true";
+      });
+    };
+
+    if (typeof window !== "undefined") {
+      keydownHandler = (event: KeyboardEvent) => {
+        if (!view) return;
+        if (event.defaultPrevented) return;
+        const isModF = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f";
+        if (!isModF) return;
+        event.preventDefault();
+        openSearchPanel(view);
+        view.focus();
+        requestAnimationFrame(applySearchInputConfig);
+      };
+      window.addEventListener("keydown", keydownHandler, true);
+    }
+
+    if (typeof MutationObserver !== "undefined") {
+      searchObserver = new MutationObserver(applySearchInputConfig);
+      searchObserver.observe(view.dom, { childList: true, subtree: true });
+    }
+
     return () => {
+      if (keydownHandler && typeof window !== "undefined") {
+        window.removeEventListener("keydown", keydownHandler, true);
+      }
+      keydownHandler = null;
+      searchObserver?.disconnect();
+      searchObserver = null;
       view?.destroy();
       view = null;
     };

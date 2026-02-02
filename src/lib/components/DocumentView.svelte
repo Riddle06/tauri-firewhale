@@ -28,6 +28,8 @@
   let documentJson = $state("");
   let documentReady = $state(false);
   let unlisten: UnlistenFn | null = null;
+  let copyState = $state<"idle" | "copied" | "error">("idle");
+  let copyTimeout: ReturnType<typeof setTimeout> | null = null;
   const currentWindow = isTauri() ? getCurrentWebviewWindow() : null;
 
   function buildTitle(nextCollection: string, nextId: string): string {
@@ -67,6 +69,33 @@
     }
   }
 
+  async function copyDocument(): Promise<void> {
+    if (!documentJson) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(documentJson);
+      } else if (typeof document !== "undefined") {
+        const textarea = document.createElement("textarea");
+        textarea.value = documentJson;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+      copyState = "copied";
+    } catch {
+      copyState = "error";
+    }
+    if (copyTimeout) {
+      clearTimeout(copyTimeout);
+    }
+    copyTimeout = setTimeout(() => {
+      copyState = "idle";
+    }, 1500);
+  }
+
   onMount(() => {
     setWindowTitle(buildTitle(viewCollection, viewDocumentId));
 
@@ -93,6 +122,10 @@
     return () => {
       unlisten?.();
       unlisten = null;
+      if (copyTimeout) {
+        clearTimeout(copyTimeout);
+        copyTimeout = null;
+      }
     };
   });
 </script>
@@ -112,6 +145,13 @@
   </section>
   <footer class="document-footer">
     <div class="document-actions">
+      <button class="ghost" onclick={copyDocument} disabled={!documentReady}>
+        {copyState === "copied"
+          ? "Copied"
+          : copyState === "error"
+            ? "Copy failed"
+            : "Copy"}
+      </button>
       <button class="ghost" onclick={closeWindow}>Close</button>
     </div>
   </footer>

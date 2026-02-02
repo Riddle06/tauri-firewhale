@@ -54,6 +54,8 @@
   let documentJson = $state("");
   let initialJson = $state("");
   let documentReady = $state(false);
+  let copyState = $state<"idle" | "copied" | "error">("idle");
+  let copyTimeout: ReturnType<typeof setTimeout> | null = null;
   let jsonError = $state("");
   let saveError = $state("");
   let saving = $state(false);
@@ -188,6 +190,33 @@
     closeWindow();
   }
 
+  async function copyDocument(): Promise<void> {
+    if (!documentJson) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(documentJson);
+      } else if (typeof document !== "undefined") {
+        const textarea = document.createElement("textarea");
+        textarea.value = documentJson;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+      copyState = "copied";
+    } catch {
+      copyState = "error";
+    }
+    if (copyTimeout) {
+      clearTimeout(copyTimeout);
+    }
+    copyTimeout = setTimeout(() => {
+      copyState = "idle";
+    }, 1500);
+  }
+
   const isDirty = $derived.by(() => isDocumentJsonDirty(initialJson, documentJson));
   const canSave = $derived.by(
     () =>
@@ -233,6 +262,10 @@
     return () => {
       unlisten?.();
       unlisten = null;
+      if (copyTimeout) {
+        clearTimeout(copyTimeout);
+        copyTimeout = null;
+      }
     };
   });
 </script>
@@ -264,6 +297,13 @@
       {/if}
     </div>
     <div class="document-actions">
+      <button class="ghost" onclick={copyDocument} disabled={!documentReady}>
+        {copyState === "copied"
+          ? "Copied"
+          : copyState === "error"
+            ? "Copy failed"
+            : "Copy"}
+      </button>
       <button class="ghost" onclick={handleCancel}>Cancel</button>
       <button class="primary" onclick={handleSave} disabled={!canSave}>
         {saving ? "Saving..." : "Save"}
