@@ -34,7 +34,7 @@ jobs:
             log="- No commits found."
           fi
           {
-            echo "body<<'EOF'"
+            echo "body<<EOF"
             echo "$header"
             echo ""
             echo "$log"
