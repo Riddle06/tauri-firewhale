@@ -124,7 +124,7 @@
 
   function closeWindow(): void {
     if (currentWindow) {
-      void currentWindow.close();
+      void currentWindow.emit("document:close", { label: currentWindow.label });
       return;
     }
     if (typeof window !== "undefined") {

@@ -145,6 +145,10 @@
     label: string;
   };
 
+  type DocumentClosePayload = {
+    label: string;
+  };
+
   type ColumnResizeState = {
     column: string;
     startX: number;
@@ -202,6 +206,7 @@
 
   let documentReadyUnlisten: UnlistenFn | null = null;
   let documentUpdateUnlisten: UnlistenFn | null = null;
+  let documentCloseUnlisten: UnlistenFn | null = null;
   let clientPaginationWarningOpen = $state(false);
   let clientPaginationWarningCount = $state(0);
   let clientPaginationPending = $state<PendingClientRun | null>(null);
@@ -370,6 +375,20 @@
         .then((cleanup) => {
           documentUpdateUnlisten = cleanup;
         });
+
+      void currentWindow
+        .listen<DocumentClosePayload>("document:close", async (event) => {
+          const label = event.payload?.label;
+          if (!label) return;
+          const target = await WebviewWindow.getByLabel(label);
+          if (!target) return;
+          setTimeout(() => {
+            void target.close();
+          }, 50);
+        })
+        .then((cleanup) => {
+          documentCloseUnlisten = cleanup;
+        });
     }
 
     let messageHandler: ((event: MessageEvent) => void) | null = null;
@@ -389,6 +408,8 @@
       documentReadyUnlisten = null;
       documentUpdateUnlisten?.();
       documentUpdateUnlisten = null;
+      documentCloseUnlisten?.();
+      documentCloseUnlisten = null;
       if (messageHandler && typeof window !== "undefined") {
         window.removeEventListener("message", messageHandler);
       }
