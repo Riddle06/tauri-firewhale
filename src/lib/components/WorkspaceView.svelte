@@ -50,6 +50,8 @@
   const BOTTOM_PANEL_STORAGE_KEY = "firewhale:bottom-panel-height";
   const DEFAULT_QUERY_PANEL_HEIGHT = 280;
   const DEFAULT_BOTTOM_PANEL_HEIGHT = 360;
+  const DEFAULT_RESULT_COLUMN_WIDTH = 250;
+  const MIN_RESULT_COLUMN_WIDTH = 120;
   const MIN_BOTTOM_PANEL_HEIGHT = 220;
   const MIN_QUERY_PANEL_HEIGHT = 240;
   const RESIZER_HEIGHT = 12;
@@ -72,6 +74,8 @@
   let panelsEl = $state<HTMLDivElement | null>(null);
   let resizeStartY = 0;
   let resizeStartHeight = 0;
+  let columnWidths = $state<Record<string, number>>({});
+  let columnResizeState = $state<ColumnResizeState | null>(null);
   let contextMenu = $state<ContextMenuState>({
     open: false,
     x: 0,
@@ -141,6 +145,12 @@
     label: string;
   };
 
+  type ColumnResizeState = {
+    column: string;
+    startX: number;
+    startWidth: number;
+  };
+
   type ContextMenuState = {
     open: boolean;
     x: number;
@@ -173,6 +183,11 @@
     const keys = Object.keys(activeRunState.rows[0]);
     if (!keys.includes("id")) return keys;
     return ["id", ...keys.filter((key) => key !== "id")];
+  });
+
+  const resultTableWidth = $derived.by(() => {
+    if (activeColumns.length === 0) return 0;
+    return activeColumns.reduce((total, column) => total + getColumnWidth(column), 0);
   });
 
   const filteredCollections = $derived.by(() => {
@@ -259,6 +274,45 @@
     event.preventDefault();
     const delta = event.key === "ArrowUp" ? RESIZE_STEP : -RESIZE_STEP;
     setBottomPanelHeight(bottomPanelHeight + delta);
+  }
+
+  function getColumnWidth(column: string): number {
+    return columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH;
+  }
+
+  function shouldTruncateColumn(column: string): boolean {
+    return getColumnWidth(column) <= DEFAULT_RESULT_COLUMN_WIDTH;
+  }
+
+  function setColumnWidth(column: string, width: number): void {
+    const clamped = Math.max(MIN_RESULT_COLUMN_WIDTH, Math.round(width));
+    if (columnWidths[column] === clamped) return;
+    columnWidths = { ...columnWidths, [column]: clamped };
+  }
+
+  function handleColumnResizerPointerDown(event: PointerEvent, column: string): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId);
+    columnResizeState = {
+      column,
+      startX: event.clientX,
+      startWidth: getColumnWidth(column)
+    };
+  }
+
+  function handleColumnResizerPointerMove(event: PointerEvent): void {
+    if (!columnResizeState) return;
+    event.preventDefault();
+    const delta = event.clientX - columnResizeState.startX;
+    setColumnWidth(columnResizeState.column, columnResizeState.startWidth + delta);
+  }
+
+  function handleColumnResizerPointerUp(event: PointerEvent): void {
+    if (!columnResizeState) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
+    columnResizeState = null;
   }
 
   onMount(() => {
@@ -370,6 +424,19 @@
     if (currentWindow) {
       void currentWindow.setTitle(title);
     }
+  });
+
+  $effect(() => {
+    if (activeColumns.length === 0) return;
+    let changed = false;
+    const next = { ...columnWidths };
+    for (const column of activeColumns) {
+      if (next[column] === undefined) {
+        next[column] = DEFAULT_RESULT_COLUMN_WIDTH;
+        changed = true;
+      }
+    }
+    if (changed) columnWidths = next;
   });
 
   function createNewTab(): void {
@@ -1352,11 +1419,25 @@
                     {/if}
                   </div>
                   <div class="result-table-wrap">
-                    <table class="result-table">
+                    <table class="result-table" style={`width: ${resultTableWidth}px;`}>
+                      <colgroup>
+                        {#each activeColumns as column (column)}
+                          <col style={`width: ${getColumnWidth(column)}px;`} />
+                        {/each}
+                      </colgroup>
                       <thead>
                         <tr>
                           {#each activeColumns as column (column)}
-                            <th>{column}</th>
+                            <th>
+                              <span class="column-label">{column}</span>
+                              <span
+                                class={`column-resizer ${columnResizeState?.column === column ? "active" : ""}`}
+                                onpointerdown={(event) => handleColumnResizerPointerDown(event, column)}
+                                onpointermove={handleColumnResizerPointerMove}
+                                onpointerup={handleColumnResizerPointerUp}
+                                onpointercancel={handleColumnResizerPointerUp}
+                              ></span>
+                            </th>
                           {/each}
                         </tr>
                       </thead>
@@ -1368,7 +1449,18 @@
                             ondblclick={() => openJsonViewerWindow(row)}
                           >
                             {#each activeColumns as column (column)}
-                              <td>{formatCell(row[column])}</td>
+                              {@const cellValue = formatCell(row[column])}
+                              {@const truncate = shouldTruncateColumn(column)}
+                              <td>
+                                <span
+                                  class="cell-content"
+                                  class:truncate={truncate}
+                                  class:expand={!truncate}
+                                  title={cellValue}
+                                >
+                                  {cellValue}
+                                </span>
+                              </td>
                             {/each}
                           </tr>
                         {/each}
@@ -2024,17 +2116,17 @@
   }
 
   .result-table {
-    width: max-content;
     min-width: 100%;
     border-collapse: collapse;
     font-size: 0.8rem;
+    table-layout: fixed;
   }
 
   .result-table th,
   .result-table td {
     text-align: left;
     padding: 8px 10px;
-    white-space: nowrap;
+    vertical-align: top;
   }
 
   .result-table th {
@@ -2046,6 +2138,37 @@
     letter-spacing: 0.1em;
     color: rgba(var(--fw-slate-rgb), 0.9);
     background: #fff;
+    padding-right: 18px;
+  }
+
+  .column-label {
+    display: block;
+  }
+
+  .column-resizer {
+    position: absolute;
+    top: 0;
+    right: -4px;
+    width: 8px;
+    height: 100%;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .column-resizer::after {
+    content: "";
+    position: absolute;
+    top: 20%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 1px;
+    height: 60%;
+    background: rgba(var(--fw-deep-rgb), 0.25);
+  }
+
+  .column-resizer:hover::after,
+  .column-resizer.active::after {
+    background: rgba(var(--fw-whale-rgb), 0.6);
   }
 
   .result-row {
@@ -2058,6 +2181,23 @@
 
   .result-table td {
     transition: background-color 0.15s ease;
+  }
+
+  .cell-content {
+    display: block;
+    max-width: 100%;
+  }
+
+  .cell-content.truncate {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cell-content.expand {
+    white-space: normal;
+    overflow: visible;
+    word-break: break-word;
   }
 
   .result-row:hover td {
