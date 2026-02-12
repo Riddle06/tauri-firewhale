@@ -23,8 +23,8 @@
     title?: string;
   };
 
-  let viewCollection = $state(collectionPath ?? "");
-  let viewDocumentId = $state(documentId ?? "");
+  let viewCollection = $state("");
+  let viewDocumentId = $state("");
   let documentJson = $state("");
   let documentReady = $state(false);
   let unlisten: UnlistenFn | null = null;
@@ -97,6 +97,8 @@
   }
 
   onMount(() => {
+    viewCollection = collectionPath ?? "";
+    viewDocumentId = documentId ?? "";
     setWindowTitle(buildTitle(viewCollection, viewDocumentId));
 
     if (payload) {

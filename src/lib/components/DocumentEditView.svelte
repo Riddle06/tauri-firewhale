@@ -46,8 +46,8 @@
   const tauriEnabled = isTauri();
   const currentWindow = tauriEnabled ? getCurrentWebviewWindow() : null;
 
-  let viewCollection = $state(collectionPath ?? "");
-  let viewDocumentId = $state(documentId ?? "");
+  let viewCollection = $state("");
+  let viewDocumentId = $state("");
   let viewTabId = $state<string | null>(null);
   let viewConnectionId = $state<string | null>(null);
   let idIsSynthetic = $state(false);
@@ -237,6 +237,8 @@
       syncConnection();
     });
 
+    viewCollection = collectionPath ?? "";
+    viewDocumentId = documentId ?? "";
     setWindowTitle(buildTitle(viewCollection, viewDocumentId));
 
     if (payload) {

@@ -78,6 +78,18 @@ function compareValues(left: unknown, right: unknown): number {
 }
 
 function applyWhere(rows: Row[], clause: WhereClause): Row[] {
+  const compareComparable = (left: unknown, right: unknown): number | null => {
+    if (typeof left === "number" && typeof right === "number") {
+      if (left === right) return 0;
+      return left > right ? 1 : -1;
+    }
+    if (typeof left === "string" && typeof right === "string") {
+      if (left === right) return 0;
+      return left > right ? 1 : -1;
+    }
+    return null;
+  };
+
   return rows.filter((row) => {
     const value = row[clause.field];
     switch (clause.op) {
@@ -85,23 +97,34 @@ function applyWhere(rows: Row[], clause: WhereClause): Row[] {
         return value === clause.value;
       case "!=":
         return value !== clause.value;
-      case "<":
-        return value < clause.value;
-      case "<=":
-        return value <= clause.value;
-      case ">":
-        return value > clause.value;
-      case ">=":
-        return value >= clause.value;
+      case "<": {
+        const compared = compareComparable(value, clause.value);
+        return compared !== null && compared < 0;
+      }
+      case "<=": {
+        const compared = compareComparable(value, clause.value);
+        return compared !== null && compared <= 0;
+      }
+      case ">": {
+        const compared = compareComparable(value, clause.value);
+        return compared !== null && compared > 0;
+      }
+      case ">=": {
+        const compared = compareComparable(value, clause.value);
+        return compared !== null && compared >= 0;
+      }
       case "in":
-        return Array.isArray(clause.value) && clause.value.includes(value as QueryValue);
+        return (
+          Array.isArray(clause.value) &&
+          (clause.value as unknown[]).some((entry) => entry === value)
+        );
       case "array-contains":
-        return Array.isArray(value) && value.includes(clause.value as QueryValue);
+        return Array.isArray(value) && (value as unknown[]).some((entry) => entry === clause.value);
       case "array-contains-any":
         return (
           Array.isArray(value) &&
           Array.isArray(clause.value) &&
-          clause.value.some((entry) => value.includes(entry))
+          (clause.value as unknown[]).some((entry) => (value as unknown[]).includes(entry))
         );
       default:
         return false;

@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { EditorState } from "@codemirror/state";
   import { EditorView, keymap, lineNumbers } from "@codemirror/view";
+  import { codeFolding, foldGutter, foldKeymap } from "@codemirror/language";
   import { json } from "@codemirror/lang-json";
   import {
     highlightSelectionMatches,
@@ -27,11 +28,13 @@
     const state = EditorState.create({
       doc: value,
       extensions: [
+        foldGutter(),
         lineNumbers(),
+        codeFolding(),
         json(),
         vscodeDark,
         highlightSelectionMatches(),
-        keymap.of([...searchKeymap]),
+        keymap.of([...foldKeymap, ...searchKeymap]),
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
         EditorView.updateListener.of((update) => {
@@ -140,6 +143,17 @@
 
   .editor :global(.cm-lineNumbers .cm-gutterElement) {
     padding: 0 10px 0 8px;
+  }
+
+  .editor :global(.cm-foldGutter .cm-gutterElement) {
+    cursor: pointer;
+    color: rgba(var(--fw-ice-rgb), 0.7);
+  }
+
+  .editor :global(.cm-foldPlaceholder) {
+    background: rgba(var(--fw-whale-rgb), 0.35);
+    border: 1px solid rgba(var(--fw-ice-rgb), 0.2);
+    color: rgba(var(--fw-ice-rgb), 0.9);
   }
 
   .editor :global(.cm-activeLineGutter) {
