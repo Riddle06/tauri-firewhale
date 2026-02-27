@@ -142,16 +142,55 @@ export function addTab(connectionId: string, collectionPath: string): TabState |
 export function closeTab(tabId: string): void {
   workspace.update((current) => {
     if (!current) return current;
+    const closedIndex = current.tabs.findIndex((tab) => tab.id === tabId);
+    if (closedIndex < 0) return current;
+
     const nextTabs = current.tabs.filter((tab) => tab.id !== tabId);
+    if (nextTabs.length === 0) {
+      const fallbackTab = createTabState(current.connectionId);
+      return { ...current, tabs: [fallbackTab], activeTabId: fallbackTab.id };
+    }
+
     let nextActive = current.activeTabId;
     if (current.activeTabId === tabId) {
-      nextActive = nextTabs[0]?.id ?? null;
+      const rightTab = current.tabs[closedIndex + 1];
+      const leftTab = current.tabs[closedIndex - 1];
+      nextActive = rightTab?.id ?? leftTab?.id ?? nextTabs[0].id;
+    } else if (!nextActive || !nextTabs.some((tab) => tab.id === nextActive)) {
+      nextActive = nextTabs[0].id;
     }
-    const finalTabs = nextTabs.length > 0 ? nextTabs : [createTabState(current.connectionId)];
-    if (finalTabs.length === 1 && !nextActive) {
-      nextActive = finalTabs[0].id;
+
+    return { ...current, tabs: nextTabs, activeTabId: nextActive };
+  });
+  schedulePersist();
+}
+
+export function closeOtherTabs(tabId: string): void {
+  workspace.update((current) => {
+    if (!current) return current;
+    const targetTab = current.tabs.find((tab) => tab.id === tabId);
+    if (!targetTab) return current;
+    if (current.tabs.length <= 1) return current;
+    return { ...current, tabs: [targetTab], activeTabId: targetTab.id };
+  });
+  schedulePersist();
+}
+
+export function closeTabsToRight(tabId: string): void {
+  workspace.update((current) => {
+    if (!current) return current;
+    const targetIndex = current.tabs.findIndex((tab) => tab.id === tabId);
+    if (targetIndex < 0) return current;
+
+    const nextTabs = current.tabs.slice(0, targetIndex + 1);
+    if (nextTabs.length === current.tabs.length) return current;
+
+    let nextActive = current.activeTabId;
+    if (!nextActive || !nextTabs.some((tab) => tab.id === nextActive)) {
+      nextActive = nextTabs[nextTabs.length - 1].id;
     }
-    return { ...current, tabs: finalTabs, activeTabId: nextActive };
+
+    return { ...current, tabs: nextTabs, activeTabId: nextActive };
   });
   schedulePersist();
 }
@@ -182,11 +221,16 @@ export function updateClientPagination(tabId: string, enabled: boolean): void {
   schedulePersist();
 }
 
-export function updateCollectionPath(tabId: string, path: string): void {
+export function updateCollectionPath(
+  tabId: string,
+  path: string,
+  options: { queryText?: string } = {}
+): void {
   const normalized = normalizeCollectionPath(path);
   workspace.update((current) => {
     if (!current) return current;
     const nextCollections = appendCollection(current.collections, normalized);
+    const nextQueryText = options.queryText;
     return {
       ...current,
       collections: nextCollections,
@@ -195,7 +239,8 @@ export function updateCollectionPath(tabId: string, path: string): void {
           ? {
               ...tab,
               collectionPath: normalized,
-              title: deriveTabTitle(normalized)
+              title: deriveTabTitle(normalized),
+              ...(nextQueryText !== undefined ? { queryText: nextQueryText } : {})
             }
           : tab
       )

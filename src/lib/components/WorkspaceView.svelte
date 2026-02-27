@@ -15,6 +15,8 @@
     addTab,
     addCollection,
     closeTab,
+    closeOtherTabs,
+    closeTabsToRight,
     collections,
     fieldStats,
     loadWorkspaceForConnection,
@@ -81,6 +83,12 @@
     x: 0,
     y: 0,
     row: null
+  });
+  let tabContextMenu = $state<TabContextMenuState>({
+    open: false,
+    x: 0,
+    y: 0,
+    tabId: null
   });
 
   const tauriEnabled = isTauri();
@@ -162,6 +170,13 @@
     row: Record<string, unknown> | null;
   };
 
+  type TabContextMenuState = {
+    open: boolean;
+    x: number;
+    y: number;
+    tabId: string | null;
+  };
+
   const emptyRunState: QueryRunState = {
     status: "idle",
     rows: [],
@@ -201,6 +216,19 @@
       collection.toLowerCase().includes(needle)
     );
   });
+
+  const tabContextTargetIndex = $derived.by(() => {
+    if (!tabContextMenu.tabId) return -1;
+    return $tabs.findIndex((tab) => tab.id === tabContextMenu.tabId);
+  });
+
+  const canCloseOtherTabs = $derived.by(
+    () => tabContextTargetIndex >= 0 && $tabs.length > 1
+  );
+
+  const canCloseTabsToRight = $derived.by(
+    () => tabContextTargetIndex >= 0 && tabContextTargetIndex < $tabs.length - 1
+  );
 
   const documentPayloads = new SvelteMap<string, DocumentWindowPayload>();
 
@@ -279,6 +307,18 @@
     event.preventDefault();
     const delta = event.key === "ArrowUp" ? RESIZE_STEP : -RESIZE_STEP;
     setBottomPanelHeight(bottomPanelHeight + delta);
+  }
+
+  function isCloseTabShortcut(event: KeyboardEvent): boolean {
+    if (event.altKey || event.shiftKey) return false;
+    if (!event.metaKey && !event.ctrlKey) return false;
+    return event.key.toLowerCase() === "w";
+  }
+
+  function closeActiveTab(): void {
+    if (!$activeTab) return;
+    closeTab($activeTab.id);
+    closeTabContextMenu();
   }
 
   function getColumnWidth(column: string): number {
@@ -392,6 +432,7 @@
     }
 
     let messageHandler: ((event: MessageEvent) => void) | null = null;
+    let keydownHandler: ((event: KeyboardEvent) => void) | null = null;
     if (!currentWindow && typeof window !== "undefined") {
       messageHandler = (event: MessageEvent) => {
         const data = event.data as { type?: string; payload?: DocumentUpdatedPayload };
@@ -399,6 +440,15 @@
         handleDocumentUpdated(data.payload);
       };
       window.addEventListener("message", messageHandler);
+    }
+    if (typeof window !== "undefined") {
+      keydownHandler = (event: KeyboardEvent) => {
+        if (!isCloseTabShortcut(event)) return;
+        if (!$activeTab) return;
+        event.preventDefault();
+        closeActiveTab();
+      };
+      window.addEventListener("keydown", keydownHandler, true);
     }
 
     return () => {
@@ -412,6 +462,9 @@
       documentCloseUnlisten = null;
       if (messageHandler && typeof window !== "undefined") {
         window.removeEventListener("message", messageHandler);
+      }
+      if (keydownHandler && typeof window !== "undefined") {
+        window.removeEventListener("keydown", keydownHandler, true);
       }
     };
   });
@@ -460,10 +513,17 @@
     if (changed) columnWidths = next;
   });
 
+  $effect(() => {
+    if (!tabContextMenu.open || !tabContextMenu.tabId) return;
+    if ($tabs.some((tab) => tab.id === tabContextMenu.tabId)) return;
+    closeTabContextMenu();
+  });
+
   function createNewTab(): void {
     if (!$activeConnectionId) return;
     addTab($activeConnectionId, "");
     bottomTab = "result";
+    closeTabContextMenu();
   }
 
   function buildDefaultQuery(path: string): string {
@@ -881,13 +941,12 @@
 
   function selectCollection(path: string): void {
     if (!$activeTab) return;
-    updateCollectionPath($activeTab.id, path);
-    if (!$activeTab.queryText.trim()) {
-      updateQueryText(
-        $activeTab.id,
-        buildDefaultQuery(path)
-      );
-    }
+    if ($activeTab.queryText.trim()) return;
+    const normalized = normalizeCollectionPath(path);
+    if (!normalized) return;
+    updateCollectionPath($activeTab.id, normalized, {
+      queryText: buildDefaultQuery(normalized)
+    });
   }
 
   async function openCollectionTab(path: string): Promise<void> {
@@ -1020,18 +1079,66 @@
     return new Date(timestamp).toLocaleTimeString();
   }
 
-  function resolveContextMenuPosition(x: number, y: number): { x: number; y: number } {
+  function resolveContextMenuPosition(
+    x: number,
+    y: number,
+    dimensions: { width: number; height: number } = { width: 180, height: 96 }
+  ): { x: number; y: number } {
     if (typeof window === "undefined") return { x, y };
     const padding = 8;
-    const menuWidth = 180;
-    const menuHeight = 96;
-    const maxX = Math.max(padding, window.innerWidth - menuWidth - padding);
-    const maxY = Math.max(padding, window.innerHeight - menuHeight - padding);
+    const maxX = Math.max(padding, window.innerWidth - dimensions.width - padding);
+    const maxY = Math.max(padding, window.innerHeight - dimensions.height - padding);
     return { x: Math.min(x, maxX), y: Math.min(y, maxY) };
+  }
+
+  function openTabContextMenu(event: MouseEvent, tabId: string): void {
+    event.preventDefault();
+    closeContextMenu();
+    const { x, y } = resolveContextMenuPosition(event.clientX, event.clientY, {
+      width: 220,
+      height: 140
+    });
+    tabContextMenu = { open: true, x, y, tabId };
+  }
+
+  function closeTabContextMenu(): void {
+    if (!tabContextMenu.open) return;
+    tabContextMenu = { open: false, x: 0, y: 0, tabId: null };
+  }
+
+  function closeOtherTabsForMenu(): void {
+    const tabId = tabContextMenu.tabId;
+    if (!tabId) {
+      closeTabContextMenu();
+      return;
+    }
+    closeOtherTabs(tabId);
+    closeTabContextMenu();
+  }
+
+  function closeTabsToRightForMenu(): void {
+    const tabId = tabContextMenu.tabId;
+    if (!tabId) {
+      closeTabContextMenu();
+      return;
+    }
+    closeTabsToRight(tabId);
+    closeTabContextMenu();
+  }
+
+  function closeTabForMenu(): void {
+    const tabId = tabContextMenu.tabId;
+    if (!tabId) {
+      closeTabContextMenu();
+      return;
+    }
+    closeTab(tabId);
+    closeTabContextMenu();
   }
 
   function openRowContextMenu(event: MouseEvent, row: Record<string, unknown>): void {
     event.preventDefault();
+    closeTabContextMenu();
     const { x, y } = resolveContextMenuPosition(event.clientX, event.clientY);
     contextMenu = { open: true, x, y, row };
   }
@@ -1195,6 +1302,11 @@
     closeContextMenu();
   }
 
+  function handleTabContextMenuBackdropClick(event: MouseEvent): void {
+    if (event.currentTarget !== event.target) return;
+    closeTabContextMenu();
+  }
+
   function handleBackdropKeydown(
     event: KeyboardEvent,
     closeHandler: () => void
@@ -1326,21 +1438,33 @@
       <div class="tabs-bar">
         {#each $tabs as tab (tab.id)}
           <div class={`tab ${tab.id === $activeTab?.id ? "active" : ""}`}>
-            <button class="tab-main" type="button" onclick={() => setActiveTab(tab.id)}>
+            <button
+              class="tab-main"
+              type="button"
+              onclick={() => {
+                setActiveTab(tab.id);
+                closeTabContextMenu();
+              }}
+              oncontextmenu={(event) => openTabContextMenu(event, tab.id)}
+              title={tab.collectionPath || "collection"}
+            >
               <span class="tab-title">{tab.title}</span>
-              <span class="tab-path">{tab.collectionPath || "collection"}</span>
             </button>
             <button
               class="tab-close"
               type="button"
-              onclick={() => closeTab(tab.id)}
+              onclick={(event) => {
+                event.stopPropagation();
+                closeTab(tab.id);
+                closeTabContextMenu();
+              }}
               aria-label="Close tab"
             >
               x
             </button>
           </div>
         {/each}
-        <button class="tab-add" onclick={createNewTab}>+</button>
+        <button class="tab-add" onclick={createNewTab} aria-label="New tab">+</button>
       </div>
 
       <div class="workspace-panels" bind:this={panelsEl} class:resizing={isResizing}>
@@ -1595,6 +1719,41 @@
       </div>
     </div>
   {/if}
+  {#if tabContextMenu.open}
+    <div
+      class="context-menu-backdrop"
+      role="button"
+      tabindex="0"
+      aria-label="Close tab menu"
+      onclick={handleTabContextMenuBackdropClick}
+      onkeydown={(event) => handleBackdropKeydown(event, closeTabContextMenu)}
+    >
+      <div
+        class="context-menu context-menu-tabs"
+        style={`top: ${tabContextMenu.y}px; left: ${tabContextMenu.x}px;`}
+      >
+        <button class="context-menu-item" type="button" onclick={closeTabForMenu}>
+          Close Tab
+        </button>
+        <button
+          class="context-menu-item"
+          type="button"
+          onclick={closeOtherTabsForMenu}
+          disabled={!canCloseOtherTabs}
+        >
+          Close Other Tabs
+        </button>
+        <button
+          class="context-menu-item"
+          type="button"
+          onclick={closeTabsToRightForMenu}
+          disabled={!canCloseTabsToRight}
+        >
+          Close Tabs to the Right
+        </button>
+      </div>
+    </div>
+  {/if}
 {/if}
 
 <style>
@@ -1835,67 +1994,124 @@
 
   .tabs-bar {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    align-items: flex-end;
+    gap: 6px;
     overflow-x: auto;
-    padding-bottom: 4px;
+    padding: 8px 10px 0;
+    border: 1px solid rgba(var(--fw-frost-rgb), 0.9);
+    border-bottom: none;
+    border-radius: 16px 16px 0 0;
+    background: linear-gradient(
+      180deg,
+      rgba(var(--fw-ice-rgb), 0.94) 0%,
+      rgba(var(--fw-ice-rgb), 0.85) 100%
+    );
+    scrollbar-width: thin;
   }
 
   .tab {
     display: flex;
-    align-items: stretch;
-    padding: 10px 12px;
-    border-radius: 14px;
-    background: rgba(var(--fw-ice-rgb), 0.9);
-    border: 1px solid transparent;
-    min-width: 160px;
-    text-align: left;
-    cursor: pointer;
+    align-items: center;
     position: relative;
+    min-width: 180px;
+    max-width: 260px;
+    border-radius: 12px 12px 0 0;
+    border: 1px solid rgba(var(--fw-frost-rgb), 0.9);
+    border-bottom-color: transparent;
+    background: rgba(var(--fw-ice-rgb), 0.65);
+    transform: translateY(2px);
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+      box-shadow 0.15s ease, transform 0.15s ease;
+  }
+
+  .tab:hover {
+    background: rgba(var(--fw-ice-rgb), 0.9);
   }
 
   .tab.active {
-    border-color: rgba(var(--fw-whale-rgb), 0.6);
-    box-shadow: 0 8px 18px rgba(var(--fw-whale-rgb), 0.25);
+    border-color: rgba(var(--fw-whale-rgb), 0.5);
+    background: #fff;
+    box-shadow: 0 10px 20px rgba(var(--fw-whale-rgb), 0.18);
+    transform: translateY(0);
+    z-index: 1;
   }
 
   .tab-main {
     flex: 1;
-    display: grid;
-    gap: 2px;
-    padding: 0 20px 0 0;
+    min-width: 0;
+    padding: 9px 34px 9px 12px;
     background: transparent;
     border: none;
     text-align: left;
     cursor: pointer;
+    color: var(--fw-deep);
   }
 
   .tab-title {
+    display: block;
     font-weight: 600;
-  }
-
-  .tab-path {
-    font-size: 0.75rem;
-    color: var(--fw-slate);
+    font-size: 0.86rem;
+    line-height: 1.1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .tab-close {
     position: absolute;
-    top: 6px;
-    right: 10px;
-    font-size: 0.75rem;
-    color: var(--fw-slate);
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%) scale(0.92);
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    line-height: 1;
+    color: rgba(var(--fw-slate-rgb), 0.95);
+    display: grid;
+    place-items: center;
     background: transparent;
     border: none;
     cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease, background-color 0.12s ease,
+      color 0.12s ease, transform 0.12s ease;
+  }
+
+  .tab:hover .tab-close,
+  .tab.active .tab-close,
+  .tab:focus-within .tab-close {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(-50%) scale(1);
+  }
+
+  .tab-close:hover {
+    background: rgba(var(--fw-frost-rgb), 0.6);
+    color: var(--fw-deep);
   }
 
   .tab-add {
-    border-radius: 12px;
-    padding: 8px 12px;
-    border: 1px dashed rgba(var(--fw-frost-rgb), 0.9);
-    background: transparent;
+    align-self: center;
+    border-radius: 999px;
+    width: 30px;
+    height: 30px;
+    border: 1px dashed rgba(var(--fw-frost-rgb), 0.95);
+    background: rgba(var(--fw-ice-rgb), 0.8);
     cursor: pointer;
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    color: var(--fw-slate);
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .tab-add:hover {
+    background: #fff;
+    border-color: rgba(var(--fw-whale-rgb), 0.6);
+    color: var(--fw-deep);
   }
 
   .workspace-panels {
@@ -2313,6 +2529,10 @@
     box-shadow: 0 16px 32px rgba(var(--fw-ink-rgb), 0.18);
   }
 
+  .context-menu-tabs {
+    min-width: 220px;
+  }
+
   .context-menu-item {
     width: 100%;
     text-align: left;
@@ -2326,6 +2546,15 @@
 
   .context-menu-item:hover {
     background: var(--fw-ice);
+  }
+
+  .context-menu-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .context-menu-item:disabled:hover {
+    background: transparent;
   }
 
   .workspace-empty {
