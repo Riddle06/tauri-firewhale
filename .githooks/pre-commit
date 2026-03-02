@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+if command -v bun >/dev/null 2>&1; then
+  bun ./scripts/version-hooks.mjs pre-commit
+  exit $?
+fi
+
+if command -v node >/dev/null 2>&1; then
+  node ./scripts/version-hooks.mjs pre-commit
+  exit $?
+fi
+
+echo "[version-hook] bun or node is required to run pre-commit." >&2
+exit 1

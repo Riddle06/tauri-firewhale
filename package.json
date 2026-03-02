@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "hooks:install": "git config core.hooksPath .githooks && chmod +x .githooks/pre-commit .githooks/pre-push scripts/version-hooks.mjs",
     "tauri": "tauri"
   },
   "license": "MIT",
