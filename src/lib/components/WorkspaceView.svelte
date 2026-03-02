@@ -58,6 +58,11 @@
   const DEFAULT_QUERY_LIMIT = 50;
   const CLIENT_PAGINATION_THRESHOLD = 100;
   const BOTTOM_PANEL_STORAGE_KEY = "firewhale:bottom-panel-height";
+  const COLLECTIONS_PANEL_WIDTH_STORAGE_KEY = "firewhale:collections-panel-width";
+  const DEFAULT_COLLECTIONS_PANEL_WIDTH = 300;
+  const MIN_COLLECTIONS_PANEL_WIDTH = 240;
+  const MAX_COLLECTIONS_PANEL_WIDTH = 460;
+  const MIN_WORKSPACE_MAIN_WIDTH = 720;
   const DEFAULT_QUERY_PANEL_HEIGHT = 280;
   const DEFAULT_BOTTOM_PANEL_HEIGHT = 360;
   const DEFAULT_RESULT_COLUMN_WIDTH = 250;
@@ -65,6 +70,7 @@
   const MIN_BOTTOM_PANEL_HEIGHT = 220;
   const MIN_QUERY_PANEL_HEIGHT = 240;
   const RESIZER_HEIGHT = 12;
+  const SIDEBAR_RESIZER_WIDTH = 12;
   const RESIZE_STEP = 24;
 
   let bottomTab = $state<(typeof bottomTabs)[number]["id"]>("result");
@@ -76,15 +82,20 @@
   let newCollectionPath = $state("");
   let collectionError = $state("");
   let collectionFilter = $state("");
+  let collectionsPanelWidth = $state(DEFAULT_COLLECTIONS_PANEL_WIDTH);
   let bottomPanelHeight = $state(DEFAULT_BOTTOM_PANEL_HEIGHT);
   let timestampDisplayLocal = $state(true);
   let timestampTimezone = $state("UTC");
   let timezoneOptions = $state<string[]>(["UTC"]);
+  let isSidebarResizing = $state(false);
   let isResizing = $state(false);
   let runStates = $state<Record<string, QueryRunState>>({});
   let runLogs = $state<Record<string, QueryLog[]>>({});
   let runSequence = $state(0);
+  let workspaceShellEl = $state<HTMLDivElement | null>(null);
   let panelsEl = $state<HTMLDivElement | null>(null);
+  let sidebarResizeStartX = 0;
+  let sidebarResizeStartWidth = 0;
   let resizeStartY = 0;
   let resizeStartHeight = 0;
   let columnWidths = $state<Record<string, number>>({});
@@ -250,7 +261,7 @@
   let clientPaginationWarningCount = $state(0);
   let clientPaginationPending = $state<PendingClientRun | null>(null);
 
-  function parseStoredHeight(value: string | null): number | null {
+  function parseStoredSize(value: string | null): number | null {
     if (!value) return null;
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -280,6 +291,39 @@
     bottomPanelHeight = clamped;
     if (!persist || typeof window === "undefined") return;
     window.localStorage.setItem(BOTTOM_PANEL_STORAGE_KEY, String(clamped));
+  }
+
+  function getMaxCollectionsPanelWidth(): number {
+    if (!workspaceShellEl) return MAX_COLLECTIONS_PANEL_WIDTH;
+    const available = workspaceShellEl.clientWidth - SIDEBAR_RESIZER_WIDTH;
+    if (available <= 0) return MAX_COLLECTIONS_PANEL_WIDTH;
+    const maxByLayout = available - MIN_WORKSPACE_MAIN_WIDTH;
+    if (maxByLayout <= MIN_COLLECTIONS_PANEL_WIDTH) return MIN_COLLECTIONS_PANEL_WIDTH;
+    return Math.min(MAX_COLLECTIONS_PANEL_WIDTH, maxByLayout);
+  }
+
+  function clampCollectionsPanelWidth(width: number): number {
+    const maxWidth = getMaxCollectionsPanelWidth();
+    return Math.min(Math.max(width, MIN_COLLECTIONS_PANEL_WIDTH), maxWidth);
+  }
+
+  function setCollectionsPanelWidth(width: number, persist = true): void {
+    const clamped = Math.round(clampCollectionsPanelWidth(width));
+    if (clamped === collectionsPanelWidth) {
+      if (persist && typeof window !== "undefined") {
+        window.localStorage.setItem(
+          COLLECTIONS_PANEL_WIDTH_STORAGE_KEY,
+          String(clamped)
+        );
+      }
+      return;
+    }
+    collectionsPanelWidth = clamped;
+    if (!persist || typeof window === "undefined") return;
+    window.localStorage.setItem(
+      COLLECTIONS_PANEL_WIDTH_STORAGE_KEY,
+      String(clamped)
+    );
   }
 
   function computeDefaultBottomPanelHeight(): number {
@@ -318,6 +362,36 @@
     event.preventDefault();
     const delta = event.key === "ArrowUp" ? RESIZE_STEP : -RESIZE_STEP;
     setBottomPanelHeight(bottomPanelHeight + delta);
+  }
+
+  function handleSidebarResizerPointerDown(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId);
+    isSidebarResizing = true;
+    sidebarResizeStartX = event.clientX;
+    sidebarResizeStartWidth = collectionsPanelWidth;
+  }
+
+  function handleSidebarResizerPointerMove(event: PointerEvent): void {
+    if (!isSidebarResizing) return;
+    event.preventDefault();
+    const delta = event.clientX - sidebarResizeStartX;
+    setCollectionsPanelWidth(sidebarResizeStartWidth + delta, false);
+  }
+
+  function handleSidebarResizerPointerUp(event: PointerEvent): void {
+    if (!isSidebarResizing) return;
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
+    isSidebarResizing = false;
+    setCollectionsPanelWidth(collectionsPanelWidth);
+  }
+
+  function handleSidebarResizerKeydown(event: KeyboardEvent): void {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const delta = event.key === "ArrowRight" ? RESIZE_STEP : -RESIZE_STEP;
+    setCollectionsPanelWidth(collectionsPanelWidth + delta);
   }
 
   function isCloseTabShortcut(event: KeyboardEvent): boolean {
@@ -483,16 +557,23 @@
   onMount(() => {
     if (typeof window === "undefined") return;
 
-    const storedHeight = parseStoredHeight(
+    const storedHeight = parseStoredSize(
       window.localStorage.getItem(BOTTOM_PANEL_STORAGE_KEY)
+    );
+    const storedCollectionsPanelWidth = parseStoredSize(
+      window.localStorage.getItem(COLLECTIONS_PANEL_WIDTH_STORAGE_KEY)
     );
 
     void tick().then(() => {
+      const initialCollectionsWidth =
+        storedCollectionsPanelWidth ?? DEFAULT_COLLECTIONS_PANEL_WIDTH;
+      setCollectionsPanelWidth(initialCollectionsWidth);
       const initialHeight = storedHeight ?? computeDefaultBottomPanelHeight();
       setBottomPanelHeight(initialHeight);
     });
 
     const handleResize = () => {
+      setCollectionsPanelWidth(collectionsPanelWidth, false);
       setBottomPanelHeight(bottomPanelHeight, false);
     };
 
@@ -1393,7 +1474,12 @@
     <p>Return to the launcher to open a workspace window.</p>
   </div>
 {:else}
-  <div class="workspace-shell">
+  <div
+    class="workspace-shell"
+    bind:this={workspaceShellEl}
+    class:sidebar-resizing={isSidebarResizing}
+    style={`--collections-panel-width: ${collectionsPanelWidth}px`}
+  >
     <aside class="collections-panel">
       <div class="collections-header">
         <div class="connection-pill">
@@ -1486,6 +1572,18 @@
         </div>
       </div>
     </aside>
+
+    <button
+      class="sidebar-resizer"
+      class:active={isSidebarResizing}
+      type="button"
+      aria-label="Resize collections panel width"
+      onpointerdown={handleSidebarResizerPointerDown}
+      onpointermove={handleSidebarResizerPointerMove}
+      onpointerup={handleSidebarResizerPointerUp}
+      onpointercancel={handleSidebarResizerPointerUp}
+      onkeydown={handleSidebarResizerKeydown}
+    ></button>
 
     <section class="workspace-main">
       <header class="workspace-header">
@@ -1845,21 +1943,61 @@
 <style>
   .workspace-shell {
     display: grid;
-    grid-template-columns: 260px 1fr;
+    grid-template-columns: var(--collections-panel-width, 300px) 12px minmax(0, 1fr);
     height: 100vh;
     min-height: 0;
+    min-width: 0;
+  }
+
+  .workspace-shell.sidebar-resizing {
+    user-select: none;
   }
 
   .collections-panel {
     padding: 24px 18px;
-    background: rgba(var(--fw-ice-rgb), 0.88);
-    border-right: 1px solid rgba(var(--fw-frost-rgb), 0.9);
+    
+    background-image: linear-gradient(180deg, var(--fw-ice) 100%, var(--fw-ice) 100%);
+    border-right: none;
+    box-shadow: inset -1px 0 0 rgba(var(--fw-deep-rgb), 0.2);
     display: flex;
     flex-direction: column;
     gap: 16px;
     height: 100vh;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .sidebar-resizer {
+    width: 12px;
+    border: none;
+    margin: 0;
+    padding: 0;
+    background: rgba(var(--fw-frost-rgb), 0.14);
+    cursor: col-resize;
+    touch-action: none;
+    display: grid;
+    place-items: center;
+  }
+
+  .sidebar-resizer::after {
+    content: "";
+    width: 3px;
+    height: 64px;
+    border-radius: 999px;
+    background: rgba(var(--fw-frost-rgb), 0.95);
+    transition: background-color 0.15s ease, height 0.15s ease;
+  }
+
+  .sidebar-resizer:hover::after,
+  .sidebar-resizer.active::after,
+  .workspace-shell.sidebar-resizing .sidebar-resizer::after {
+    background: rgba(var(--fw-whale-rgb), 0.6);
+    height: 84px;
+  }
+
+  .sidebar-resizer:focus-visible {
+    outline: none;
+    background: rgba(var(--fw-sky-rgb), 0.28);
   }
 
   .collections-header {
@@ -1939,7 +2077,7 @@
   .collection-table {
     border-radius: 14px;
     border: 1px solid rgba(var(--fw-frost-rgb), 0.9);
-    background: rgba(var(--fw-ice-rgb), 0.9);
+    background: rgba(var(--fw-frost-rgb), 0.9);
     overflow: hidden;
   }
 
@@ -1952,7 +2090,7 @@
     text-transform: uppercase;
     letter-spacing: 0.12em;
     color: rgba(var(--fw-slate-rgb), 0.9);
-    background: rgba(var(--fw-ice-rgb), 0.95);
+    background: rgba(var(--fw-frost-rgb), 0.96);
     border-bottom: 1px solid rgba(var(--fw-frost-rgb), 0.9);
   }
 
@@ -2050,6 +2188,7 @@
     grid-template-rows: auto auto minmax(0, 1fr);
     gap: 16px;
     padding: 24px;
+    background: rgba(var(--fw-ice-rgb), 0.96);
     height: 100%;
     box-sizing: border-box;
     min-height: 0;
@@ -2738,6 +2877,7 @@
   @media (max-width: 1024px) {
     .workspace-shell {
       grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(0, 1fr);
     }
 
     .collections-panel {
@@ -2745,6 +2885,10 @@
       border-bottom: 1px solid rgba(var(--fw-frost-rgb), 0.9);
       height: auto;
       overflow: visible;
+    }
+
+    .sidebar-resizer {
+      display: none;
     }
 
     .collection-scroll {
