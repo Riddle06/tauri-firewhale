@@ -29,6 +29,14 @@
     updateQueryText
   } from "$lib/stores/workspace";
   import { normalizeCollectionPath } from "$lib/utils/state";
+  import { applyTimestampDisplayValue } from "$lib/utils/timestamp-display";
+  import {
+    parseStoredBoolean,
+    resolveSystemTimezone,
+    resolveTimezoneOptions,
+    TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY,
+    TIMESTAMP_TIMEZONE_STORAGE_KEY
+  } from "$lib/utils/timestamp-settings";
   import { parseQueryChain, validateQueryAst } from "$lib/query/parser";
   import type { OrderByClause, QueryAst } from "$lib/query/types";
   import {
@@ -69,6 +77,9 @@
   let collectionError = $state("");
   let collectionFilter = $state("");
   let bottomPanelHeight = $state(DEFAULT_BOTTOM_PANEL_HEIGHT);
+  let timestampDisplayLocal = $state(true);
+  let timestampTimezone = $state("UTC");
+  let timezoneOptions = $state<string[]>(["UTC"]);
   let isResizing = $state(false);
   let runStates = $state<Record<string, QueryRunState>>({});
   let runLogs = $state<Record<string, QueryLog[]>>({});
@@ -491,6 +502,32 @@
     };
   });
 
+  onMount(() => {
+    if (typeof window === "undefined") return;
+
+    const systemTimezone = resolveSystemTimezone();
+    const nextOptions = resolveTimezoneOptions(systemTimezone);
+    timezoneOptions = nextOptions;
+
+    const storedTimezone = window.localStorage.getItem(TIMESTAMP_TIMEZONE_STORAGE_KEY);
+    const nextTimezone =
+      storedTimezone && nextOptions.includes(storedTimezone)
+        ? storedTimezone
+        : systemTimezone;
+    timestampTimezone = nextTimezone;
+
+    const storedDisplayLocal = window.localStorage.getItem(
+      TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY
+    );
+    timestampDisplayLocal = parseStoredBoolean(storedDisplayLocal, true);
+
+    window.localStorage.setItem(TIMESTAMP_TIMEZONE_STORAGE_KEY, nextTimezone);
+    window.localStorage.setItem(
+      TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY,
+      String(timestampDisplayLocal)
+    );
+  });
+
   $effect(() => {
     if (!$activeConnection?.name) return;
     const title = `${$activeConnection.name} - Firewhale`;
@@ -511,6 +548,20 @@
       }
     }
     if (changed) columnWidths = next;
+  });
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY,
+      String(timestampDisplayLocal)
+    );
+  });
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    if (!timestampTimezone) return;
+    window.localStorage.setItem(TIMESTAMP_TIMEZONE_STORAGE_KEY, timestampTimezone);
   });
 
   $effect(() => {
@@ -730,6 +781,16 @@
     if (!$activeTab) return;
     const target = event.target as HTMLInputElement;
     updateClientPagination($activeTab.id, target.checked);
+  }
+
+  function handleTimestampDisplayLocalToggle(event: Event): void {
+    const target = event.target as HTMLInputElement;
+    timestampDisplayLocal = target.checked;
+  }
+
+  function handleTimestampTimezoneChange(event: Event): void {
+    const target = event.target as HTMLSelectElement;
+    timestampTimezone = target.value;
   }
 
   function clearClientPaginationWarning(): void {
@@ -1069,10 +1130,14 @@
   }
 
   function formatCell(value: unknown): string {
-    if (value === null || value === undefined) return "";
-    if (Array.isArray(value)) return value.map((entry) => String(entry)).join(", ");
-    if (typeof value === "object") return JSON.stringify(value);
-    return String(value);
+    const mapped = applyTimestampDisplayValue(value, {
+      useLocalTimezone: timestampDisplayLocal,
+      timezone: timestampTimezone
+    });
+    if (mapped === null || mapped === undefined) return "";
+    if (Array.isArray(mapped)) return mapped.map((entry) => String(entry)).join(", ");
+    if (typeof mapped === "object") return JSON.stringify(mapped);
+    return String(mapped);
   }
 
   function formatTimestamp(timestamp: number): string {
@@ -1471,10 +1536,31 @@
         <section class="query-panel">
           <div class="panel-header">
             <h3>Query</h3>
-          <div class="panel-meta">
-            <span class="status muted">
-              {$activeTab?.collectionPath || "Select a collection"}
-            </span>
+            <div class="panel-meta">
+              <span class="status muted">
+                {$activeTab?.collectionPath || "Select a collection"}
+              </span>
+              <div class="timestamp-controls">
+                <label class="timestamp-toggle">
+                  <input
+                    type="checkbox"
+                    checked={timestampDisplayLocal}
+                    onchange={handleTimestampDisplayLocalToggle}
+                  />
+                  <span>Show local time</span>
+                </label>
+                <select
+                  class="timezone-select"
+                  value={timestampTimezone}
+                  onchange={handleTimestampTimezoneChange}
+                  disabled={!timestampDisplayLocal || timezoneOptions.length === 0}
+                  aria-label="Timestamp timezone"
+                >
+                  {#each timezoneOptions as timezone (timezone)}
+                    <option value={timezone}>{timezone}</option>
+                  {/each}
+                </select>
+              </div>
               <div class="run-actions">
                 <label class="client-pagination-toggle">
                   <input
@@ -1495,10 +1581,10 @@
                   {activeRunState.status === "running" ? "Running..." : "Run"}
                 </button>
               </div>
-            <button
-              class="ghost format-button"
-              type="button"
-              onclick={formatActiveQuery}
+              <button
+                class="ghost format-button"
+                type="button"
+                onclick={formatActiveQuery}
                 disabled={!$activeTab}
                 title="Format (Cmd/Ctrl+Shift+F or Shift+Alt+F)"
               >
@@ -2201,6 +2287,48 @@
     display: flex;
     align-items: center;
     gap: 12px;
+  }
+
+  .timestamp-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .timestamp-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    color: var(--fw-slate);
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .timestamp-toggle input {
+    accent-color: var(--fw-whale);
+  }
+
+  .timezone-select {
+    border-radius: 10px;
+    border: 1px solid rgba(var(--fw-frost-rgb), 0.9);
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    color: var(--fw-deep);
+    background: #fff;
+    min-width: 180px;
+    max-width: 240px;
+  }
+
+  .timezone-select:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(var(--fw-sky-rgb), 0.35);
+  }
+
+  .timezone-select:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .client-pagination-toggle {

@@ -5,6 +5,13 @@
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import { updateFirestoreDocument } from "$lib/query/firestore";
+  import { applyTimestampDisplayValue } from "$lib/utils/timestamp-display";
+  import {
+    readTimestampDisplayOptions,
+    TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY,
+    TIMESTAMP_TIMEZONE_STORAGE_KEY
+  } from "$lib/utils/timestamp-settings";
+  import type { TimestampDisplayOptions } from "$lib/utils/timestamp";
   import {
     formatDocumentJson,
     isDocumentJsonDirty,
@@ -51,6 +58,8 @@
   let viewTabId = $state<string | null>(null);
   let viewConnectionId = $state<string | null>(null);
   let idIsSynthetic = $state(false);
+  let sourceRow = $state<Record<string, unknown> | null>(null);
+  let timestampDisplayOptions = $state<TimestampDisplayOptions>(readTimestampDisplayOptions());
   let documentJson = $state("");
   let initialJson = $state("");
   let documentReady = $state(false);
@@ -90,6 +99,19 @@
     void selectConnection(viewConnectionId);
   }
 
+  function refreshEditorJsonFromSource(force = false): void {
+    if (!sourceRow) return;
+    if (!force && isDocumentJsonDirty(initialJson, documentJson)) return;
+    const displayed = applyTimestampDisplayValue(
+      sourceRow,
+      timestampDisplayOptions
+    ) as Record<string, unknown>;
+    const formatted = formatDocumentJson(displayed);
+    documentJson = formatted;
+    initialJson = formatted;
+    jsonError = "";
+  }
+
   function applyPayload(nextPayload: DocumentEditPayload): void {
     if (!nextPayload) return;
     if (nextPayload.collectionPath) {
@@ -107,11 +129,9 @@
     idIsSynthetic = Boolean(nextPayload.idIsSynthetic);
     const nextTitle = nextPayload.title ?? buildTitle(viewCollection, viewDocumentId);
     setWindowTitle(nextTitle);
-    const editableRow = stripSyntheticId(nextPayload.row, idIsSynthetic);
-    documentJson = formatDocumentJson(editableRow);
-    initialJson = documentJson;
+    sourceRow = stripSyntheticId(nextPayload.row, idIsSynthetic);
+    refreshEditorJsonFromSource(true);
     documentReady = true;
-    jsonError = "";
     saveError = "";
     syncConnection();
   }
@@ -232,6 +252,8 @@
   );
 
   onMount(() => {
+    let storageListener: ((event: StorageEvent) => void) | null = null;
+
     void initConnections().then(() => {
       connectionsReady = true;
       syncConnection();
@@ -240,6 +262,7 @@
     viewCollection = collectionPath ?? "";
     viewDocumentId = documentId ?? "";
     setWindowTitle(buildTitle(viewCollection, viewDocumentId));
+    timestampDisplayOptions = readTimestampDisplayOptions();
 
     if (payload) {
       try {
@@ -261,9 +284,27 @@
         });
     }
 
+    if (typeof window !== "undefined") {
+      storageListener = (event: StorageEvent) => {
+        if (
+          event.key &&
+          event.key !== TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY &&
+          event.key !== TIMESTAMP_TIMEZONE_STORAGE_KEY
+        ) {
+          return;
+        }
+        timestampDisplayOptions = readTimestampDisplayOptions();
+        refreshEditorJsonFromSource();
+      };
+      window.addEventListener("storage", storageListener);
+    }
+
     return () => {
       unlisten?.();
       unlisten = null;
+      if (storageListener && typeof window !== "undefined") {
+        window.removeEventListener("storage", storageListener);
+      }
       if (copyTimeout) {
         clearTimeout(copyTimeout);
         copyTimeout = null;

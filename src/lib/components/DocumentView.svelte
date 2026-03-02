@@ -4,6 +4,13 @@
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
+  import { applyTimestampDisplayValue } from "$lib/utils/timestamp-display";
+  import {
+    readTimestampDisplayOptions,
+    TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY,
+    TIMESTAMP_TIMEZONE_STORAGE_KEY
+  } from "$lib/utils/timestamp-settings";
+  import type { TimestampDisplayOptions } from "$lib/utils/timestamp";
   import { formatJson } from "$lib/utils/json-highlight";
 
   const {
@@ -25,7 +32,9 @@
 
   let viewCollection = $state("");
   let viewDocumentId = $state("");
+  let sourceRow = $state<Record<string, unknown> | null>(null);
   let documentJson = $state("");
+  let timestampDisplayOptions = $state<TimestampDisplayOptions>(readTimestampDisplayOptions());
   let documentReady = $state(false);
   let unlisten: UnlistenFn | null = null;
   let copyState = $state<"idle" | "copied" | "error">("idle");
@@ -45,6 +54,18 @@
     }
   }
 
+  function refreshDocumentJson(): void {
+    if (!sourceRow) {
+      documentJson = "";
+      return;
+    }
+    const displayed = applyTimestampDisplayValue(
+      sourceRow,
+      timestampDisplayOptions
+    ) as Record<string, unknown>;
+    documentJson = formatJson(displayed);
+  }
+
   function applyPayload(nextPayload: DocumentViewPayload): void {
     if (!nextPayload) return;
     if (nextPayload.collectionPath) {
@@ -55,7 +76,8 @@
     }
     const nextTitle = nextPayload.title ?? buildTitle(viewCollection, viewDocumentId);
     setWindowTitle(nextTitle);
-    documentJson = formatJson(nextPayload.row);
+    sourceRow = nextPayload.row;
+    refreshDocumentJson();
     documentReady = true;
   }
 
@@ -97,9 +119,12 @@
   }
 
   onMount(() => {
+    let storageListener: ((event: StorageEvent) => void) | null = null;
+
     viewCollection = collectionPath ?? "";
     viewDocumentId = documentId ?? "";
     setWindowTitle(buildTitle(viewCollection, viewDocumentId));
+    timestampDisplayOptions = readTimestampDisplayOptions();
 
     if (payload) {
       try {
@@ -121,9 +146,27 @@
         });
     }
 
+    if (typeof window !== "undefined") {
+      storageListener = (event: StorageEvent) => {
+        if (
+          event.key &&
+          event.key !== TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY &&
+          event.key !== TIMESTAMP_TIMEZONE_STORAGE_KEY
+        ) {
+          return;
+        }
+        timestampDisplayOptions = readTimestampDisplayOptions();
+        refreshDocumentJson();
+      };
+      window.addEventListener("storage", storageListener);
+    }
+
     return () => {
       unlisten?.();
       unlisten = null;
+      if (storageListener && typeof window !== "undefined") {
+        window.removeEventListener("storage", storageListener);
+      }
       if (copyTimeout) {
         clearTimeout(copyTimeout);
         copyTimeout = null;

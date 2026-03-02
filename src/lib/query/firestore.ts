@@ -3,6 +3,11 @@ import { readTextFile } from "@tauri-apps/plugin-fs";
 import { SignJWT, importPKCS8 } from "jose";
 import type { ConnectionProfile } from "$lib/models";
 import type { QueryAst, QueryRunResult, WhereClause } from "$lib/query/types";
+import {
+  encodeFirestoreFields,
+  encodeFirestoreValue,
+  type FirestoreValue
+} from "$lib/query/firestore-values";
 
 type ServiceAccount = {
   client_email: string;
@@ -14,20 +19,6 @@ type ServiceAccount = {
 type TokenCacheEntry = {
   token: string;
   expiresAt: number;
-};
-
-type FirestoreValue = {
-  stringValue?: string;
-  integerValue?: string;
-  doubleValue?: number;
-  booleanValue?: boolean;
-  nullValue?: null;
-  timestampValue?: string;
-  referenceValue?: string;
-  geoPointValue?: { latitude: number; longitude: number };
-  bytesValue?: string;
-  arrayValue?: { values?: FirestoreValue[] };
-  mapValue?: { fields?: Record<string, FirestoreValue> };
 };
 
 type FirestoreFilter =
@@ -82,28 +73,6 @@ async function loadServiceAccount(path: string): Promise<ServiceAccount> {
   return parseServiceAccount(raw);
 }
 
-function encodeFirestoreValue(value: unknown): FirestoreValue {
-  if (value === null) return { nullValue: null };
-  if (value === undefined) return { nullValue: null };
-  if (Array.isArray(value)) {
-    return { arrayValue: { values: value.map(encodeFirestoreValue) } };
-  }
-  if (typeof value === "string") return { stringValue: value };
-  if (typeof value === "boolean") return { booleanValue: value };
-  if (typeof value === "number") {
-    if (Number.isInteger(value)) return { integerValue: value.toString() };
-    return { doubleValue: value };
-  }
-  if (typeof value === "object") {
-    const fields: Record<string, FirestoreValue> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      fields[key] = encodeFirestoreValue(entry);
-    }
-    return { mapValue: { fields } };
-  }
-  return { stringValue: String(value) };
-}
-
 function decodeFirestoreValue(value?: FirestoreValue): unknown {
   if (!value) return null;
   if (value.stringValue !== undefined) return value.stringValue;
@@ -127,14 +96,6 @@ function decodeFirestoreValue(value?: FirestoreValue): unknown {
     return output;
   }
   return null;
-}
-
-function encodeFirestoreFields(data: Record<string, unknown>): Record<string, FirestoreValue> {
-  const fields: Record<string, FirestoreValue> = {};
-  for (const [key, value] of Object.entries(data)) {
-    fields[key] = encodeFirestoreValue(value);
-  }
-  return fields;
 }
 
 function buildFirestoreFilter(clauses: WhereClause[]): FirestoreFilter | undefined {
@@ -601,7 +562,7 @@ export async function updateFirestoreDocument(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      fields: encodeFirestoreFields(data)
+      fields: encodeFirestoreFields(data, { coerceTimestampStrings: true })
     })
   });
 
