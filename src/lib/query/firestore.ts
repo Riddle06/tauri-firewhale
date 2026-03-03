@@ -578,3 +578,69 @@ export async function updateFirestoreDocument(
   }
   return row;
 }
+
+export async function createFirestoreDocument(
+  connection: ConnectionProfile,
+  collectionPath: string,
+  documentId: string | null,
+  data: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const normalizedCollectionPath = collectionPath.replace(/^\/+|\/+$/g, "");
+  if (!normalizedCollectionPath) {
+    throw new Error("Collection path is missing.");
+  }
+
+  const normalizedDocumentId = (documentId ?? "").replace(/^\/+|\/+$/g, "");
+  if (normalizedDocumentId.includes("/")) {
+    throw new Error("Document id cannot contain '/'.");
+  }
+
+  const credentialPath = connection.auth.encryptedPayloadRef;
+  const serviceAccount = await loadServiceAccount(credentialPath);
+  if (
+    connection.projectId &&
+    serviceAccount.project_id &&
+    connection.projectId !== serviceAccount.project_id
+  ) {
+    throw new Error("Project ID does not match credential.");
+  }
+
+  const projectId = connection.projectId || serviceAccount.project_id;
+
+  if (!projectId) {
+    throw new Error("Project ID is missing.");
+  }
+
+  const accessToken = await getAccessToken(serviceAccount);
+  const query = new URLSearchParams();
+  if (normalizedDocumentId) {
+    query.set("documentId", normalizedDocumentId);
+  }
+  const queryString = query.toString();
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${normalizedCollectionPath}${
+    queryString ? `?${queryString}` : ""
+  }`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      fields: encodeFirestoreFields(data, { coerceTimestampStrings: true })
+    })
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Firestore request failed (${response.status}): ${message}`);
+  }
+
+  const payload = (await response.json()) as FirestoreDocument;
+  const row = decodeFirestoreDocument(payload);
+  if (!row) {
+    throw new Error("Failed to decode created document.");
+  }
+  return row;
+}

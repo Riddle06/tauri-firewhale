@@ -4,8 +4,12 @@
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
-  import { updateFirestoreDocument } from "$lib/query/firestore";
+  import {
+    createFirestoreDocument,
+    updateFirestoreDocument
+  } from "$lib/query/firestore";
   import { applyTimestampDisplayValue } from "$lib/utils/timestamp-display";
+  import { generateFirestoreDocumentId } from "$lib/utils/firestore-id";
   import {
     readTimestampDisplayOptions,
     TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY,
@@ -33,8 +37,11 @@
     payload?: string | null;
   }>();
 
+  type DocumentMode = "edit" | "create";
+
   type DocumentEditPayload = {
-    row: Record<string, unknown>;
+    mode?: DocumentMode;
+    row?: Record<string, unknown>;
     collectionPath?: string;
     id?: string;
     title?: string;
@@ -50,9 +57,17 @@
     row: Record<string, unknown>;
   };
 
+  type DocumentCreatedPayload = {
+    tabId: string;
+    collectionPath: string;
+    documentId: string;
+    row: Record<string, unknown>;
+  };
+
   const tauriEnabled = isTauri();
   const currentWindow = tauriEnabled ? getCurrentWebviewWindow() : null;
 
+  let viewMode = $state<DocumentMode>("edit");
   let viewCollection = $state("");
   let viewDocumentId = $state("");
   let viewTabId = $state<string | null>(null);
@@ -71,10 +86,16 @@
   let connectionsReady = $state(false);
   let unlisten: UnlistenFn | null = null;
 
-  function buildTitle(nextCollection: string, nextId: string): string {
+  function buildTitle(
+    nextCollection: string,
+    nextId: string,
+    mode: DocumentMode = "edit"
+  ): string {
     const collectionLabel = nextCollection || "collection";
     const idLabel = nextId || "Document";
-    return `${collectionLabel} - ${idLabel} - Edit Mode`;
+    return `${collectionLabel} - ${idLabel} - ${
+      mode === "create" ? "Create Mode" : "Edit Mode"
+    }`;
   }
 
   function setWindowTitle(title: string): void {
@@ -99,6 +120,25 @@
     void selectConnection(viewConnectionId);
   }
 
+  type ResolveDocumentIdResult =
+    | { ok: true; value: string }
+    | { ok: false; error: string };
+
+  function resolveDocumentIdFromJson(data: Record<string, unknown>): ResolveDocumentIdResult {
+    const rawId = data.id;
+    if (typeof rawId !== "string") {
+      return { ok: false, error: "JSON field 'id' must be a string." };
+    }
+    const normalized = rawId.trim();
+    if (!normalized) {
+      return { ok: false, error: "JSON field 'id' cannot be empty." };
+    }
+    if (normalized.includes("/")) {
+      return { ok: false, error: "JSON field 'id' cannot contain '/'." };
+    }
+    return { ok: true, value: normalized };
+  }
+
   function refreshEditorJsonFromSource(force = false): void {
     if (!sourceRow) return;
     if (!force && isDocumentJsonDirty(initialJson, documentJson)) return;
@@ -114,6 +154,7 @@
 
   function applyPayload(nextPayload: DocumentEditPayload): void {
     if (!nextPayload) return;
+    viewMode = nextPayload.mode ?? "edit";
     if (nextPayload.collectionPath) {
       viewCollection = nextPayload.collectionPath;
     }
@@ -127,9 +168,32 @@
       viewConnectionId = nextPayload.connectionId;
     }
     idIsSynthetic = Boolean(nextPayload.idIsSynthetic);
-    const nextTitle = nextPayload.title ?? buildTitle(viewCollection, viewDocumentId);
+    const nextTitle = nextPayload.title ?? buildTitle(viewCollection, viewDocumentId, viewMode);
     setWindowTitle(nextTitle);
-    sourceRow = stripSyntheticId(nextPayload.row, idIsSynthetic);
+
+    const payloadRow = nextPayload.row
+      ? stripSyntheticId(nextPayload.row, idIsSynthetic)
+      : null;
+    if (viewMode === "create") {
+      const seededId =
+        typeof payloadRow?.id === "string" && payloadRow.id.trim()
+          ? payloadRow.id.trim()
+          : viewDocumentId || generateFirestoreDocumentId();
+      viewDocumentId = seededId;
+      sourceRow = {
+        ...(payloadRow ?? {}),
+        id: seededId
+      };
+    } else {
+      sourceRow = payloadRow;
+    }
+
+    if (!sourceRow) {
+      documentReady = false;
+      saveError = "Missing document payload.";
+      return;
+    }
+
     refreshEditorJsonFromSource(true);
     documentReady = true;
     saveError = "";
@@ -140,6 +204,12 @@
     documentJson = nextValue;
     const parsed = parseDocumentJson(nextValue);
     jsonError = parsed.ok ? "" : parsed.error;
+    if (viewMode !== "create" || !parsed.ok) return;
+    const idResult = resolveDocumentIdFromJson(parsed.value);
+    if (!idResult.ok) return;
+    if (idResult.value === viewDocumentId) return;
+    viewDocumentId = idResult.value;
+    setWindowTitle(buildTitle(viewCollection, viewDocumentId, viewMode));
   }
 
   function closeWindow(): void {
@@ -156,10 +226,10 @@
     if (saving) return;
     saveError = "";
     if (!tauriEnabled) {
-      saveError = "Editing documents is only supported in the desktop app.";
+      saveError = "Document write is only supported in the desktop app.";
       return;
     }
-    if (!viewCollection || !viewDocumentId) {
+    if (!viewCollection) {
       saveError = "Missing document context.";
       return;
     }
@@ -178,29 +248,70 @@
     }
     saving = true;
     try {
-      const updatedRow = await updateFirestoreDocument(
-        $activeConnection,
-        viewCollection,
-        viewDocumentId,
-        parsed.value
-      );
-      const updatePayload: DocumentUpdatedPayload = {
-        tabId: viewTabId,
-        collectionPath: viewCollection,
-        documentId: viewDocumentId,
-        row: updatedRow
-      };
-      if (currentWindow) {
-        void currentWindow.emit("document:updated", updatePayload);
-      } else if (typeof window !== "undefined" && window.opener) {
-        window.opener.postMessage(
-          { type: "document:updated", payload: updatePayload },
-          "*"
+      if (viewMode === "create") {
+        const idResult = resolveDocumentIdFromJson(parsed.value);
+        if (!idResult.ok) {
+          saveError = idResult.error;
+          return;
+        }
+        const createData = {
+          ...parsed.value,
+          id: idResult.value
+        };
+        const createdRow = await createFirestoreDocument(
+          $activeConnection,
+          viewCollection,
+          idResult.value,
+          createData
         );
+        const createPayload: DocumentCreatedPayload = {
+          tabId: viewTabId,
+          collectionPath: viewCollection,
+          documentId: idResult.value,
+          row: createdRow
+        };
+        if (currentWindow) {
+          void currentWindow.emit("document:created", createPayload);
+        } else if (typeof window !== "undefined" && window.opener) {
+          window.opener.postMessage(
+            { type: "document:created", payload: createPayload },
+            "*"
+          );
+        }
+      } else {
+        if (!viewDocumentId) {
+          saveError = "Missing document id.";
+          return;
+        }
+        const updatedRow = await updateFirestoreDocument(
+          $activeConnection,
+          viewCollection,
+          viewDocumentId,
+          parsed.value
+        );
+        const updatePayload: DocumentUpdatedPayload = {
+          tabId: viewTabId,
+          collectionPath: viewCollection,
+          documentId: viewDocumentId,
+          row: updatedRow
+        };
+        if (currentWindow) {
+          void currentWindow.emit("document:updated", updatePayload);
+        } else if (typeof window !== "undefined" && window.opener) {
+          window.opener.postMessage(
+            { type: "document:updated", payload: updatePayload },
+            "*"
+          );
+        }
       }
       closeWindow();
     } catch (error) {
-      saveError = error instanceof Error ? error.message : "Failed to save document.";
+      saveError =
+        error instanceof Error
+          ? error.message
+          : viewMode === "create"
+            ? "Failed to create document."
+            : "Failed to save document.";
     } finally {
       saving = false;
     }
@@ -241,15 +352,21 @@
   const canSave = $derived.by(
     () =>
       documentReady &&
-      isDirty &&
+      (viewMode === "create" || isDirty) &&
       !jsonError &&
       !saving &&
       tauriEnabled &&
       Boolean(viewCollection) &&
-      Boolean(viewDocumentId) &&
+      (viewMode === "create" || Boolean(viewDocumentId)) &&
       Boolean(viewTabId) &&
       Boolean($activeConnection)
   );
+  const saveButtonLabel = $derived.by(() => {
+    if (saving) {
+      return viewMode === "create" ? "Creating..." : "Saving...";
+    }
+    return viewMode === "create" ? "Create" : "Save";
+  });
 
   onMount(() => {
     let storageListener: ((event: StorageEvent) => void) | null = null;
@@ -261,7 +378,7 @@
 
     viewCollection = collectionPath ?? "";
     viewDocumentId = documentId ?? "";
-    setWindowTitle(buildTitle(viewCollection, viewDocumentId));
+    setWindowTitle(buildTitle(viewCollection, viewDocumentId, viewMode));
     timestampDisplayOptions = readTimestampDisplayOptions();
 
     if (payload) {
@@ -316,8 +433,10 @@
 <div class="document-shell">
   <header class="document-header">
     <div>
-      <div class="document-title">{buildTitle(viewCollection, viewDocumentId)}</div>
-      <div class="document-subtitle">Edit document</div>
+      <div class="document-title">{buildTitle(viewCollection, viewDocumentId, viewMode)}</div>
+      <div class="document-subtitle">
+        {viewMode === "create" ? "Add document" : "Edit document"}
+      </div>
     </div>
   </header>
   <section class="document-body">
@@ -336,7 +455,7 @@
         <div class="status error">{saveError}</div>
       {/if}
       {#if !tauriEnabled}
-        <div class="status warning">Editing is only supported in the desktop app.</div>
+        <div class="status warning">Document write is only supported in the desktop app.</div>
       {/if}
     </div>
     <div class="document-actions">
@@ -349,7 +468,7 @@
       </button>
       <button class="ghost" onclick={handleCancel}>Cancel</button>
       <button class="primary" onclick={handleSave} disabled={!canSave}>
-        {saving ? "Saving..." : "Save"}
+        {saveButtonLabel}
       </button>
     </div>
   </footer>

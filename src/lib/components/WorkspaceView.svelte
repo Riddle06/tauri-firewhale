@@ -28,6 +28,7 @@
     updateCollectionPath,
     updateQueryText
   } from "$lib/stores/workspace";
+  import { generateFirestoreDocumentId } from "$lib/utils/firestore-id";
   import { normalizeCollectionPath } from "$lib/utils/state";
   import { applyTimestampDisplayValue } from "$lib/utils/timestamp-display";
   import {
@@ -151,6 +152,7 @@
   };
 
   type DocumentEditPayload = {
+    mode?: "edit" | "create";
     row: Record<string, unknown>;
     collectionPath: string;
     id: string;
@@ -165,6 +167,13 @@
     | { event: "document:edit"; payload: DocumentEditPayload };
 
   type DocumentUpdatedPayload = {
+    tabId: string;
+    collectionPath: string;
+    documentId: string;
+    row: Record<string, unknown>;
+  };
+
+  type DocumentCreatedPayload = {
     tabId: string;
     collectionPath: string;
     documentId: string;
@@ -256,6 +265,7 @@
 
   let documentReadyUnlisten: UnlistenFn | null = null;
   let documentUpdateUnlisten: UnlistenFn | null = null;
+  let documentCreateUnlisten: UnlistenFn | null = null;
   let documentCloseUnlisten: UnlistenFn | null = null;
   let clientPaginationWarningOpen = $state(false);
   let clientPaginationWarningCount = $state(0);
@@ -502,6 +512,15 @@
         });
 
       void currentWindow
+        .listen<DocumentCreatedPayload>("document:created", (event) => {
+          if (!event.payload) return;
+          handleDocumentCreated(event.payload);
+        })
+        .then((cleanup) => {
+          documentCreateUnlisten = cleanup;
+        });
+
+      void currentWindow
         .listen<DocumentClosePayload>("document:close", async (event) => {
           const label = event.payload?.label;
           if (!label) return;
@@ -520,9 +539,18 @@
     let keydownHandler: ((event: KeyboardEvent) => void) | null = null;
     if (!currentWindow && typeof window !== "undefined") {
       messageHandler = (event: MessageEvent) => {
-        const data = event.data as { type?: string; payload?: DocumentUpdatedPayload };
-        if (!data || data.type !== "document:updated" || !data.payload) return;
-        handleDocumentUpdated(data.payload);
+        const data = event.data as {
+          type?: string;
+          payload?: DocumentUpdatedPayload | DocumentCreatedPayload;
+        };
+        if (!data?.payload) return;
+        if (data.type === "document:updated") {
+          handleDocumentUpdated(data.payload as DocumentUpdatedPayload);
+          return;
+        }
+        if (data.type === "document:created") {
+          handleDocumentCreated(data.payload as DocumentCreatedPayload);
+        }
       };
       window.addEventListener("message", messageHandler);
     }
@@ -543,6 +571,8 @@
       documentReadyUnlisten = null;
       documentUpdateUnlisten?.();
       documentUpdateUnlisten = null;
+      documentCreateUnlisten?.();
+      documentCreateUnlisten = null;
       documentCloseUnlisten?.();
       documentCloseUnlisten = null;
       if (messageHandler && typeof window !== "undefined") {
@@ -1285,7 +1315,10 @@
   function openRowContextMenu(event: MouseEvent, row: Record<string, unknown>): void {
     event.preventDefault();
     closeTabContextMenu();
-    const { x, y } = resolveContextMenuPosition(event.clientX, event.clientY);
+    const { x, y } = resolveContextMenuPosition(event.clientX, event.clientY, {
+      width: 220,
+      height: 144
+    });
     contextMenu = { open: true, x, y, row };
   }
 
@@ -1317,6 +1350,17 @@
     }
   }
 
+  function handleDocumentCreated(payload: DocumentCreatedPayload): void {
+    if (!payload?.tabId || !payload.documentId) return;
+    if (payload.collectionPath) {
+      recordFieldStats(payload.collectionPath, [payload.row]);
+    }
+    pushLog(payload.tabId, "info", `Created document: ${payload.documentId}`);
+    if ($activeTab?.id !== payload.tabId) return;
+    const nextPageIndex = activeRunState.status === "success" ? activeRunState.pageIndex : 0;
+    void runQuery(nextPageIndex);
+  }
+
   function getRowId(row: Record<string, unknown>): string {
     const metaId = (row as { __docId?: unknown }).__docId;
     if (typeof metaId === "string" && metaId) {
@@ -1343,6 +1387,12 @@
     const collectionLabel = collectionPath || "collection";
     const idLabel = getRowId(row);
     return `${collectionLabel} - ${idLabel} - Edit Mode`;
+  }
+
+  function buildCreateTitle(collectionPath: string, documentId: string): string {
+    const collectionLabel = collectionPath || "collection";
+    const idLabel = documentId || "Document";
+    return `${collectionLabel} - ${idLabel} - Create Mode`;
   }
 
   async function openJsonViewerWindow(row: Record<string, unknown>): Promise<void> {
@@ -1427,6 +1477,62 @@
     }
 
     const label = `doc-edit-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    documentPayloads.set(label, { event: "document:edit", payload });
+    const viewer = new WebviewWindow(label, {
+      url,
+      title,
+      width: 940,
+      height: 760,
+      minWidth: 720,
+      minHeight: 560
+    });
+    void viewer.once("tauri://error", () => {
+      documentPayloads.delete(label);
+    });
+
+    closeContextMenu();
+  }
+
+  async function openCreateDocumentWindow(): Promise<void> {
+    if (!$activeTab || !$activeConnectionId) return;
+    const collectionPath = $activeTab.collectionPath || "";
+    if (!collectionPath) return;
+    const generatedId = generateFirestoreDocumentId();
+    const seedRow = { id: generatedId };
+    const title = buildCreateTitle(collectionPath, generatedId);
+    const params = new URLSearchParams({
+      view: "document-edit",
+      collection: collectionPath,
+      id: generatedId
+    });
+    const url = `/?${params.toString()}`;
+
+    const payload: DocumentEditPayload = {
+      mode: "create",
+      row: seedRow,
+      collectionPath,
+      id: generatedId,
+      title,
+      tabId: $activeTab.id,
+      connectionId: $activeConnectionId,
+      idIsSynthetic: false
+    };
+
+    if (!tauriEnabled) {
+      if (typeof window !== "undefined") {
+        const browserParams = new URLSearchParams({
+          view: "document-edit",
+          collection: collectionPath,
+          id: generatedId,
+          payload: JSON.stringify(payload)
+        });
+        window.open(`/?${browserParams.toString()}`, "_blank");
+      }
+      closeContextMenu();
+      return;
+    }
+
+    const label = `doc-edit-create-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     documentPayloads.set(label, { event: "document:edit", payload });
     const viewer = new WebviewWindow(label, {
       url,
@@ -1738,15 +1844,25 @@
                   <div>{activeRunState.error}</div>
                 </div>
               {:else if activeRunState.status === "success"}
-                {#if activeRunState.rows.length === 0}
-                  <div class="panel-card">No results found.</div>
-                {:else}
-                  <div class="result-summary">
+                <div class="result-summary">
+                  <div>
                     {activeRunState.rows.length} row(s)
                     {#if activeRunState.durationMs !== undefined}
                       <span>· {activeRunState.durationMs} ms</span>
                     {/if}
                   </div>
+                  <button
+                    class="ghost result-add-button"
+                    type="button"
+                    onclick={openCreateDocumentWindow}
+                    disabled={!$activeTab?.collectionPath}
+                  >
+                    Add document
+                  </button>
+                </div>
+                {#if activeRunState.rows.length === 0}
+                  <div class="panel-card">No results found.</div>
+                {:else}
                   <div class="result-table-wrap">
                     <table class="result-table" style={`width: ${resultTableWidth}px;`}>
                       <colgroup>
@@ -1899,6 +2015,14 @@
           onclick={() => contextMenu.row && openEditDocumentWindow(contextMenu.row)}
         >
           Edit document
+        </button>
+        <button
+          class="context-menu-item"
+          type="button"
+          onclick={openCreateDocumentWindow}
+          disabled={!$activeTab?.collectionPath}
+        >
+          Add document
         </button>
       </div>
     </div>
@@ -2588,9 +2712,19 @@
   }
 
   .result-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     font-size: 0.8rem;
     color: var(--fw-slate);
     margin-bottom: 8px;
+  }
+
+  .result-add-button {
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    white-space: nowrap;
   }
 
   .result-pagination {
