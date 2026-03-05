@@ -47,6 +47,7 @@
     runFirestoreQueryAll
   } from "$lib/query/firestore";
   import type { ConnectionProfile } from "$lib/models";
+  import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import QueryEditor from "$lib/components/QueryEditor.svelte";
 
   const { connectionId = null } = $props<{ connectionId?: string | null }>();
@@ -74,7 +75,10 @@
   const SIDEBAR_RESIZER_WIDTH = 12;
   const RESIZE_STEP = 24;
 
+  type ResultViewMode = "table" | "json";
+
   let bottomTab = $state<(typeof bottomTabs)[number]["id"]>("result");
+  let resultViewMode = $state<ResultViewMode>("table");
   let workspaceLoading = $state(false);
   let collectionsLoading = $state(false);
   let collectionsError = $state("");
@@ -238,6 +242,17 @@
   const resultTableWidth = $derived.by(() => {
     if (activeColumns.length === 0) return 0;
     return activeColumns.reduce((total, column) => total + getColumnWidth(column), 0);
+  });
+
+  const activeRowsJson = $derived.by(() => {
+    if (activeRunState.status !== "success") return "";
+    const rows = activeRunState.rows.map((row) =>
+      applyTimestampDisplayValue(row, {
+        useLocalTimezone: timestampDisplayLocal,
+        timezone: timestampTimezone
+      })
+    );
+    return JSON.stringify(rows, null, 2);
   });
 
   const filteredCollections = $derived.by(() => {
@@ -902,6 +917,13 @@
   function handleTimestampTimezoneChange(event: Event): void {
     const target = event.target as HTMLSelectElement;
     timestampTimezone = target.value;
+  }
+
+  function handleResultViewModeChange(event: Event): void {
+    const target = event.target as HTMLSelectElement;
+    if (target.value === "table" || target.value === "json") {
+      resultViewMode = target.value;
+    }
   }
 
   function clearClientPaginationWarning(): void {
@@ -1851,66 +1873,88 @@
                       <span>· {activeRunState.durationMs} ms</span>
                     {/if}
                   </div>
-                  <button
-                    class="ghost result-add-button"
-                    type="button"
-                    onclick={openCreateDocumentWindow}
-                    disabled={!$activeTab?.collectionPath}
-                  >
-                    Add document
-                  </button>
+                  <div class="result-summary-actions">
+                    <label class="result-view-select-label">
+                      <span>View</span>
+                      <select
+                        class="result-view-select"
+                        value={resultViewMode}
+                        onchange={handleResultViewModeChange}
+                      >
+                        <option value="table">Table</option>
+                        <option value="json">JSON</option>
+                      </select>
+                    </label>
+                    <button
+                      class="ghost result-add-button"
+                      type="button"
+                      onclick={openCreateDocumentWindow}
+                      disabled={!$activeTab?.collectionPath}
+                    >
+                      Add document
+                    </button>
+                  </div>
                 </div>
                 {#if activeRunState.rows.length === 0}
                   <div class="panel-card">No results found.</div>
                 {:else}
-                  <div class="result-table-wrap">
-                    <table class="result-table" style={`width: ${resultTableWidth}px;`}>
-                      <colgroup>
-                        {#each activeColumns as column (column)}
-                          <col style={`width: ${getColumnWidth(column)}px;`} />
-                        {/each}
-                      </colgroup>
-                      <thead>
-                        <tr>
-                          {#each activeColumns as column (column)}
-                            <th>
-                              <span class="column-label">{column}</span>
-                              <span
-                                class={`column-resizer ${columnResizeState?.column === column ? "active" : ""}`}
-                                onpointerdown={(event) => handleColumnResizerPointerDown(event, column)}
-                                onpointermove={handleColumnResizerPointerMove}
-                                onpointerup={handleColumnResizerPointerUp}
-                                onpointercancel={handleColumnResizerPointerUp}
-                              ></span>
-                            </th>
-                          {/each}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {#each activeRunState.rows as row, rowIndex (row.id ?? rowIndex)}
-                          <tr
-                            class="result-row"
-                            oncontextmenu={(event) => openRowContextMenu(event, row)}
-                            ondblclick={() => openJsonViewerWindow(row)}
-                          >
+                  <div class="result-content">
+                    {#if resultViewMode === "table"}
+                      <div class="result-table-wrap">
+                        <table class="result-table" style={`width: ${resultTableWidth}px;`}>
+                          <colgroup>
                             {#each activeColumns as column (column)}
-                              {@const cellValue = formatCell(row[column])}
-                              {@const truncate = shouldTruncateColumn(column)}
-                              <td>
-                                <span
-                                  class="cell-content"
-                                  class:truncate={truncate}
-                                  class:expand={!truncate}
-                                  title={cellValue}
-                                >
-                                  {cellValue}
-                                </span>
-                              </td>
+                              <col style={`width: ${getColumnWidth(column)}px;`} />
                             {/each}
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
+                          </colgroup>
+                          <thead>
+                            <tr>
+                              {#each activeColumns as column (column)}
+                                <th>
+                                  <span class="column-label">{column}</span>
+                                  <span
+                                    class={`column-resizer ${columnResizeState?.column === column ? "active" : ""}`}
+                                    onpointerdown={(event) =>
+                                      handleColumnResizerPointerDown(event, column)}
+                                    onpointermove={handleColumnResizerPointerMove}
+                                    onpointerup={handleColumnResizerPointerUp}
+                                    onpointercancel={handleColumnResizerPointerUp}
+                                  ></span>
+                                </th>
+                              {/each}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {#each activeRunState.rows as row, rowIndex (row.id ?? rowIndex)}
+                              <tr
+                                class="result-row"
+                                oncontextmenu={(event) => openRowContextMenu(event, row)}
+                                ondblclick={() => openJsonViewerWindow(row)}
+                              >
+                                {#each activeColumns as column (column)}
+                                  {@const cellValue = formatCell(row[column])}
+                                  {@const truncate = shouldTruncateColumn(column)}
+                                  <td>
+                                    <span
+                                      class="cell-content"
+                                      class:truncate={truncate}
+                                      class:expand={!truncate}
+                                      title={cellValue}
+                                    >
+                                      {cellValue}
+                                    </span>
+                                  </td>
+                                {/each}
+                              </tr>
+                            {/each}
+                          </tbody>
+                        </table>
+                      </div>
+                    {:else}
+                      <div class="result-json-wrap">
+                        <DocumentEditor value={activeRowsJson} readOnly={true} />
+                      </div>
+                    {/if}
                   </div>
                   <div class="result-pagination">
                     <button
@@ -2716,15 +2760,57 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
     font-size: 0.8rem;
     color: var(--fw-slate);
     margin-bottom: 8px;
+  }
+
+  .result-summary-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .result-view-select-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    color: var(--fw-slate);
+    white-space: nowrap;
+  }
+
+  .result-view-select {
+    border-radius: 10px;
+    border: 1px solid rgba(var(--fw-frost-rgb), 0.9);
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    color: var(--fw-deep);
+    background: #fff;
+    min-width: 110px;
+  }
+
+  .result-view-select:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(var(--fw-sky-rgb), 0.35);
   }
 
   .result-add-button {
     padding: 4px 10px;
     font-size: 0.75rem;
     white-space: nowrap;
+  }
+
+  .result-content {
+    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .result-pagination {
@@ -2751,6 +2837,14 @@
     max-width: 100%;
     min-width: 0;
     min-height: 0;
+  }
+
+  .result-json-wrap {
+    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
   }
 
   .result-table {
