@@ -10,6 +10,7 @@
     searchKeymap
   } from "@codemirror/search";
   import { vscodeDark } from "@uiw/codemirror-theme-vscode";
+  import { documentEditorHistory } from "./document-editor-history";
 
   const { value = "", readOnly = true, onChange = () => {} } = $props<{
     value?: string;
@@ -34,6 +35,7 @@
         json(),
         vscodeDark,
         highlightSelectionMatches(),
+        documentEditorHistory,
         keymap.of([...foldKeymap, ...searchKeymap]),
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
