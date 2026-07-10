@@ -1,5 +1,5 @@
 import { derived, get, writable } from "svelte/store";
-import type { TabState, WorkspaceState } from "$lib/models";
+import type { TabState, TabViewState, WorkspaceState } from "$lib/models";
 import { loadWorkspace, saveWorkspace } from "$lib/storage/storage";
 import {
   createTabState,
@@ -215,6 +215,19 @@ export function updateClientPagination(tabId: string, enabled: boolean): void {
       ...current,
       tabs: current.tabs.map((tab) =>
         tab.id === tabId ? { ...tab, clientPagination: enabled } : tab
+      )
+    };
+  });
+  schedulePersist();
+}
+
+export function updateTabView(tabId: string, view: Partial<TabViewState>): void {
+  workspace.update((current) => {
+    if (!current) return current;
+    return {
+      ...current,
+      tabs: current.tabs.map((tab) =>
+        tab.id === tabId ? { ...tab, view: { ...tab.view, ...view } } : tab
       )
     };
   });

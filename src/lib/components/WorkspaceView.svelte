@@ -26,10 +26,12 @@
     tabs,
     updateClientPagination,
     updateCollectionPath,
-    updateQueryText
+    updateQueryText,
+    updateTabView
   } from "$lib/stores/workspace";
   import { generateFirestoreDocumentId } from "$lib/utils/firestore-id";
   import { normalizeCollectionPath } from "$lib/utils/state";
+  import { moveTableColumn, orderTableColumns } from "$lib/utils/table-columns";
   import { applyTimestampDisplayValue } from "$lib/utils/timestamp-display";
   import {
     parseStoredBoolean,
@@ -103,8 +105,8 @@
   let sidebarResizeStartWidth = 0;
   let resizeStartY = 0;
   let resizeStartHeight = 0;
-  let columnWidths = $state<Record<string, number>>({});
   let columnResizeState = $state<ColumnResizeState | null>(null);
+  let columnDragState = $state<ColumnDragState | null>(null);
   let contextMenu = $state<ContextMenuState>({
     open: false,
     x: 0,
@@ -198,6 +200,12 @@
     startWidth: number;
   };
 
+  type ColumnDragState = {
+    column: string;
+    target: string | null;
+    placeAfter: boolean;
+  };
+
   type ContextMenuState = {
     open: boolean;
     x: number;
@@ -235,9 +243,13 @@
   const activeColumns = $derived.by(() => {
     if (!activeRunState || activeRunState.rows.length === 0) return [] as string[];
     const keys = Object.keys(activeRunState.rows[0]);
-    if (!keys.includes("id")) return keys;
-    return ["id", ...keys.filter((key) => key !== "id")];
+    const columns = keys.includes("id")
+      ? ["id", ...keys.filter((key) => key !== "id")]
+      : keys;
+    return orderTableColumns(columns, $activeTab?.view?.selectedColumns);
   });
+
+  const columnWidths = $derived.by(() => $activeTab?.view?.columnWidths ?? {});
 
   const resultTableWidth = $derived.by(() => {
     if (activeColumns.length === 0) return 0;
@@ -442,7 +454,10 @@
   function setColumnWidth(column: string, width: number): void {
     const clamped = Math.max(MIN_RESULT_COLUMN_WIDTH, Math.round(width));
     if (columnWidths[column] === clamped) return;
-    columnWidths = { ...columnWidths, [column]: clamped };
+    if (!$activeTab) return;
+    updateTabView($activeTab.id, {
+      columnWidths: { ...columnWidths, [column]: clamped }
+    });
   }
 
   function handleColumnResizerPointerDown(event: PointerEvent, column: string): void {
@@ -468,6 +483,44 @@
     event.preventDefault();
     (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
     columnResizeState = null;
+  }
+
+  function handleColumnDragStart(event: DragEvent, column: string): void {
+    event.dataTransfer?.setData("text/plain", column);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    columnDragState = { column, target: null, placeAfter: false };
+  }
+
+  function handleColumnDragOver(event: DragEvent, target: string): void {
+    if (!columnDragState || columnDragState.column === target) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const targetElement = event.currentTarget as HTMLElement;
+    const bounds = targetElement.getBoundingClientRect();
+    columnDragState = {
+      ...columnDragState,
+      target,
+      placeAfter: event.clientX >= bounds.left + bounds.width / 2
+    };
+  }
+
+  function handleColumnDrop(event: DragEvent, target: string): void {
+    event.preventDefault();
+    const dragState = columnDragState;
+    columnDragState = null;
+    if (!dragState || !$activeTab) return;
+
+    const nextColumns = moveTableColumn(
+      activeColumns,
+      dragState.column,
+      target,
+      dragState.placeAfter
+    );
+    updateTabView($activeTab.id, { selectedColumns: nextColumns });
+  }
+
+  function handleColumnDragEnd(): void {
+    columnDragState = null;
   }
 
   onMount(() => {
@@ -661,19 +714,6 @@
     if (currentWindow) {
       void currentWindow.setTitle(title);
     }
-  });
-
-  $effect(() => {
-    if (activeColumns.length === 0) return;
-    let changed = false;
-    const next = { ...columnWidths };
-    for (const column of activeColumns) {
-      if (next[column] === undefined) {
-        next[column] = DEFAULT_RESULT_COLUMN_WIDTH;
-        changed = true;
-      }
-    }
-    if (changed) columnWidths = next;
   });
 
   $effect(() => {
@@ -1910,7 +1950,16 @@
                           <thead>
                             <tr>
                               {#each activeColumns as column (column)}
-                                <th>
+                                <th
+                                  draggable="true"
+                                  class:column-drag-over={columnDragState?.target === column}
+                                  class:column-drag-after={
+                                    columnDragState?.target === column && columnDragState.placeAfter}
+                                  ondragstart={(event) => handleColumnDragStart(event, column)}
+                                  ondragover={(event) => handleColumnDragOver(event, column)}
+                                  ondrop={(event) => handleColumnDrop(event, column)}
+                                  ondragend={handleColumnDragEnd}
+                                >
                                   <span class="column-label">{column}</span>
                                   <span
                                     class={`column-resizer ${columnResizeState?.column === column ? "active" : ""}`}
@@ -2866,11 +2915,23 @@
     top: 0;
     z-index: 1;
     font-size: 0.7rem;
-    text-transform: uppercase;
     letter-spacing: 0.1em;
     color: rgba(var(--fw-slate-rgb), 0.9);
     background: #fff;
     padding-right: 18px;
+    cursor: grab;
+  }
+
+  .result-table th.column-drag-over {
+    box-shadow: inset 2px 0 0 rgba(var(--fw-whale-rgb), 0.75);
+  }
+
+  .result-table th.column-drag-over.column-drag-after {
+    box-shadow: inset -2px 0 0 rgba(var(--fw-whale-rgb), 0.75);
+  }
+
+  .result-table th:active {
+    cursor: grabbing;
   }
 
   .column-label {
