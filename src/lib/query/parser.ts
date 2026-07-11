@@ -1,6 +1,7 @@
 import { WHERE_OPERATORS } from "./types";
 import type {
   OrderByClause,
+  JoinClause,
   QueryAst,
   QueryParseResult,
   QueryValue,
@@ -209,6 +210,20 @@ function parseWhere(parser: Parser): WhereClause {
   return { field, op: op as WhereOperator, value };
 }
 
+function parseJoin(parser: Parser): JoinClause {
+  const collectionPath = parseString(parser, "join collection path");
+  parser.expect("punct", ",");
+  const alias = parseString(parser, "join alias");
+  parser.expect("punct", ",");
+  const leftField = parseString(parser, "join left field").trim();
+  parser.expect("punct", ",");
+  const op = parseString(parser, "join operator");
+  parser.expect("punct", ",");
+  const rightField = parseString(parser, "join right field").trim();
+  parser.expect("punct", ")");
+  return { collectionPath, alias, leftField, op: op as "==", rightField };
+}
+
 function parseOrderBy(parser: Parser): OrderByClause {
   const field = parseString(parser, "orderBy field");
   let dir: OrderByClause["dir"] = "asc";
@@ -257,10 +272,17 @@ export function parseQueryChain(input: string): QueryParseResult {
     parser.consume();
     parser.expect("punct", "(");
     const collectionPath = parseString(parser, "collection path");
+    let collectionAlias: string | undefined;
+    if (parser.match("punct", ",")) {
+      parser.consume();
+      collectionAlias = parseString(parser, "collection alias");
+    }
     parser.expect("punct", ")");
 
     const ast: QueryAst = {
       collectionPath,
+      collectionAlias,
+      joins: [],
       where: [],
       orderBy: [],
       get: false
@@ -277,6 +299,9 @@ export function parseQueryChain(input: string): QueryParseResult {
       switch (method) {
         case "where":
           ast.where.push(parseWhere(parser));
+          break;
+        case "join":
+          (ast.joins ??= []).push(parseJoin(parser));
           break;
         case "orderBy":
           ast.orderBy.push(parseOrderBy(parser));
@@ -309,6 +334,29 @@ export function validateQueryAst(ast: QueryAst): string[] {
   }
   if (!ast.get) {
     errors.push("Query must end with .get().");
+  }
+  const isAlias = (value: string): boolean => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value);
+  const aliases = new Set<string>();
+  if (ast.collectionAlias) {
+    if (!isAlias(ast.collectionAlias)) errors.push("collection() alias must be an identifier.");
+    aliases.add(ast.collectionAlias);
+  }
+  for (const join of ast.joins ?? []) {
+    if (!join.collectionPath) errors.push("join() requires a collection path.");
+    if (!isAlias(join.alias)) errors.push("join() alias must be an identifier.");
+    if (aliases.has(join.alias)) errors.push(`Duplicate collection alias: ${join.alias}.`);
+    aliases.add(join.alias);
+    if (join.op !== "==") errors.push("join() supports only the == operator.");
+    const targetPrefix = `${join.alias}.`;
+    if (!join.leftField.startsWith(targetPrefix) || !join.leftField.endsWith(".id")) {
+      errors.push("join() must compare the joined alias id, for example w.id.");
+    }
+  }
+  const joinedPrefixes = (ast.joins ?? []).map((join) => `${join.alias}.`);
+  for (const clause of [...ast.where, ...ast.orderBy]) {
+    if (joinedPrefixes.some((prefix) => clause.field.startsWith(prefix))) {
+      errors.push("where() and orderBy() can only reference the main collection.");
+    }
   }
   for (const clause of ast.where) {
     if (!WHERE_OPERATORS.includes(clause.op)) {

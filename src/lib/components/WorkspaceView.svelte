@@ -244,7 +244,7 @@
 
   const activeColumns = $derived.by(() => {
     if (!activeRunState || activeRunState.rows.length === 0) return [] as string[];
-    const keys = Object.keys(activeRunState.rows[0]);
+    const keys = [...new Set(activeRunState.rows.flatMap((row) => Object.keys(row)))];
     const columns = keys.includes("id")
       ? ["id", ...keys.filter((key) => key !== "id")]
       : keys;
@@ -928,13 +928,18 @@
 
   function sortRows(
     rows: Record<string, unknown>[],
-    orderBy: OrderByClause[]
+    orderBy: OrderByClause[],
+    collectionAlias?: string
   ): Record<string, unknown>[] {
     if (orderBy.length === 0) return rows;
     return [...rows].sort((left, right) => {
       for (const order of orderBy) {
         const dir = order.dir === "desc" ? -1 : 1;
-        const diff = compareValues(left[order.field], right[order.field]);
+        const prefix = collectionAlias ? `${collectionAlias}.` : "";
+        const field = prefix && order.field.startsWith(prefix)
+          ? order.field.slice(prefix.length)
+          : order.field;
+        const diff = compareValues(left[field], right[field]);
         if (diff !== 0) return diff * dir;
       }
       return 0;
@@ -1041,7 +1046,7 @@
     }
 
     const pageSize = resolveClientPageSize(ast.limit);
-    const sortedRows = sortRows(queryResult.rows, ast.orderBy);
+    const sortedRows = sortRows(queryResult.rows, ast.orderBy, ast.collectionAlias);
     const totalRows = sortedRows.length;
     const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
     const clampedPageIndex = Math.min(Math.max(pageIndex, 0), totalPages - 1);
@@ -1460,6 +1465,13 @@
     return (row as { __idSynthetic?: boolean }).__idSynthetic === true;
   }
 
+  function getMainRow(row: Record<string, unknown>): Record<string, unknown> {
+    const mainRow = (row as { __mainRow?: unknown }).__mainRow;
+    return mainRow && typeof mainRow === "object"
+      ? (mainRow as Record<string, unknown>)
+      : row;
+  }
+
   function buildViewTitle(collectionPath: string, row: Record<string, unknown>): string {
     const collectionLabel = collectionPath || "collection";
     const idLabel = getRowId(row);
@@ -1525,9 +1537,10 @@
 
   async function openEditDocumentWindow(row: Record<string, unknown>): Promise<void> {
     if (!$activeTab || !$activeConnectionId) return;
+    const mainRow = getMainRow(row);
     const collectionPath = $activeTab.collectionPath || "collection";
-    const idLabel = getRowId(row);
-    const title = buildEditTitle(collectionPath, row);
+    const idLabel = getRowId(mainRow);
+    const title = buildEditTitle(collectionPath, mainRow);
     const params = new URLSearchParams({
       view: "document-edit",
       collection: collectionPath,
@@ -1536,13 +1549,13 @@
     const url = `/?${params.toString()}`;
 
     const payload: DocumentEditPayload = {
-      row,
+      row: mainRow,
       collectionPath,
       id: idLabel,
       title,
       tabId: $activeTab.id,
       connectionId: $activeConnectionId,
-      idIsSynthetic: isSyntheticRowId(row)
+      idIsSynthetic: isSyntheticRowId(mainRow)
     };
 
     if (!tauriEnabled) {

@@ -285,6 +285,39 @@ function buildDocumentPath(collectionPath: string, documentId: string): string {
   return `${normalizedCollection}/${normalizedId}`;
 }
 
+function normalizeMainField(field: string, collectionAlias?: string): string {
+  const prefix = collectionAlias ? `${collectionAlias}.` : "";
+  return prefix && field.startsWith(prefix) ? field.slice(prefix.length) : field;
+}
+
+function normalizeMainQuery(ast: QueryAst): QueryAst {
+  return {
+    ...ast,
+    where: ast.where.map((clause) => ({
+      ...clause,
+      field: normalizeMainField(clause.field, ast.collectionAlias)
+    })),
+    orderBy: ast.orderBy.map((clause) => ({
+      ...clause,
+      field: normalizeMainField(clause.field, ast.collectionAlias)
+    }))
+  };
+}
+
+function resolveRowField(row: Record<string, unknown>, field: string): unknown {
+  if (Object.prototype.hasOwnProperty.call(row, field)) return row[field];
+  return field.split(".").reduce<unknown>((value, key) => {
+    if (!value || typeof value !== "object") return undefined;
+    return (value as Record<string, unknown>)[key];
+  }, row);
+}
+
+function normalizeDocumentId(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const segments = String(value).split("/").filter(Boolean);
+  return segments[segments.length - 1] ?? null;
+}
+
 function decodeFirestoreDocument(document?: FirestoreDocument): Record<string, unknown> | null {
   if (!document) return null;
   const fields = document.fields ?? {};
@@ -320,6 +353,60 @@ function parseRunQueryResponse(payload: unknown): Record<string, unknown>[] {
     rows.push(row);
   }
   return rows;
+}
+
+async function fetchFirestoreDocument(
+  projectId: string,
+  accessToken: string,
+  collectionPath: string,
+  documentId: string
+): Promise<Record<string, unknown> | null> {
+  const path = buildDocumentPath(collectionPath, documentId);
+  const response = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${path}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Firestore join request failed (${response.status}): ${message}`);
+  }
+  return decodeFirestoreDocument((await response.json()) as FirestoreDocument);
+}
+
+async function applyFirestoreJoins(
+  projectId: string,
+  accessToken: string,
+  ast: QueryAst,
+  rows: Record<string, unknown>[]
+): Promise<Record<string, unknown>[]> {
+  const joins = ast.joins ?? [];
+  if (joins.length === 0 || rows.length === 0) return rows;
+  let joinedRows = rows.map((main) => ({ main, output: { ...main } }));
+
+  for (const join of joins) {
+    const rightField = normalizeMainField(join.rightField, ast.collectionAlias);
+    const ids = [...new Set(joinedRows
+      .map(({ output }) => normalizeDocumentId(resolveRowField(output, rightField)))
+      .filter((id): id is string => Boolean(id)))];
+    const documents = new Map<string, Record<string, unknown> | null>();
+    await Promise.all(ids.map(async (id) => {
+      documents.set(id, await fetchFirestoreDocument(projectId, accessToken, join.collectionPath, id));
+    }));
+    joinedRows = joinedRows.map(({ main, output }) => {
+      const id = normalizeDocumentId(resolveRowField(output, rightField));
+      const joined = id ? documents.get(id) : null;
+      const fields = joined
+        ? Object.fromEntries(Object.entries(joined).map(([key, value]) => [`${join.alias}.${key}`, value]))
+        : {};
+      return { main, output: { ...output, ...fields } };
+    });
+  }
+
+  return joinedRows.map(({ main, output }) => {
+    Object.defineProperty(output, "__mainRow", { value: main, enumerable: false });
+    return output;
+  });
 }
 
 function parseCountResponse(payload: unknown): number {
@@ -390,7 +477,7 @@ export async function runFirestoreQuery(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      structuredQuery: buildStructuredQuery(ast, { pageSize, pageIndex })
+      structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), { pageSize, pageIndex })
     })
   });
 
@@ -400,7 +487,7 @@ export async function runFirestoreQuery(
   }
 
   const payload = await response.json();
-  const rows = parseRunQueryResponse(payload);
+  const rows = await applyFirestoreJoins(projectId, accessToken, ast, parseRunQueryResponse(payload));
 
   return {
     rows,
@@ -448,7 +535,7 @@ export async function runFirestoreQueryAll(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      structuredQuery: buildStructuredQuery(ast, {
+      structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), {
         includeLimit: false,
         includeOrderBy: false
       })
@@ -461,7 +548,7 @@ export async function runFirestoreQueryAll(
   }
 
   const payload = await response.json();
-  const rows = parseRunQueryResponse(payload);
+  const rows = await applyFirestoreJoins(projectId, accessToken, ast, parseRunQueryResponse(payload));
 
   return {
     rows,
@@ -505,7 +592,7 @@ export async function runFirestoreCountQuery(
     },
     body: JSON.stringify({
       structuredAggregationQuery: {
-        structuredQuery: buildStructuredQuery(ast, {
+        structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), {
           includeLimit: false,
           includeOrderBy: false
         }),

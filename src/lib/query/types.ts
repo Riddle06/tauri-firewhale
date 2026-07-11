@@ -32,8 +32,18 @@ export type OrderByClause = {
   dir: "asc" | "desc";
 };
 
+export type JoinClause = {
+  collectionPath: string;
+  alias: string;
+  leftField: string;
+  op: "==";
+  rightField: string;
+};
+
 export type QueryAst = {
   collectionPath: string;
+  collectionAlias?: string;
+  joins?: JoinClause[];
   where: WhereClause[];
   orderBy: OrderByClause[];
   limit?: number;

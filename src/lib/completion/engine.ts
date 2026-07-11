@@ -11,11 +11,17 @@ const baseCompletions: CompletionOptionData[] = [
   { label: "db", type: "variable" },
   { label: "collection", type: "function" },
   { label: "where", type: "function" },
+  { label: "join", type: "function" },
   { label: "orderBy", type: "function" },
   { label: "limit", type: "function" },
   { label: "get", type: "function" },
   { label: "asc", type: "constant" },
   { label: "desc", type: "constant" },
+  {
+    label: "join",
+    detail: "left join",
+    snippet: ".join('${collection}', 'alias', 'alias.id', '==', '${field}')"
+  },
   {
     label: "collection chain",
     detail: "collection()",
@@ -52,6 +58,11 @@ const dbMemberCompletions: CompletionOptionData[] = [
 ];
 
 const chainMemberCompletions: CompletionOptionData[] = [
+  {
+    label: "join",
+    detail: "left join",
+    snippet: "join('${collection}', 'alias', 'alias.id', '==', '${field}')"
+  },
   {
     label: "where",
     detail: "where()",
