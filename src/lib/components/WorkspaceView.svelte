@@ -26,10 +26,12 @@
     tabs,
     updateClientPagination,
     updateCollectionPath,
-    updateQueryText
+    updateQueryText,
+    updateTabView
   } from "$lib/stores/workspace";
   import { generateFirestoreDocumentId } from "$lib/utils/firestore-id";
   import { normalizeCollectionPath } from "$lib/utils/state";
+  import { moveTableColumn, orderTableColumns } from "$lib/utils/table-columns";
   import { applyTimestampDisplayValue } from "$lib/utils/timestamp-display";
   import {
     parseStoredBoolean,
@@ -103,8 +105,8 @@
   let sidebarResizeStartWidth = 0;
   let resizeStartY = 0;
   let resizeStartHeight = 0;
-  let columnWidths = $state<Record<string, number>>({});
   let columnResizeState = $state<ColumnResizeState | null>(null);
+  let columnDragState = $state<ColumnPointerDragState | null>(null);
   let contextMenu = $state<ContextMenuState>({
     open: false,
     x: 0,
@@ -198,6 +200,14 @@
     startWidth: number;
   };
 
+  type ColumnPointerDragState = {
+    column: string;
+    target: string | null;
+    placeAfter: boolean;
+    x: number;
+    y: number;
+  };
+
   type ContextMenuState = {
     open: boolean;
     x: number;
@@ -235,9 +245,13 @@
   const activeColumns = $derived.by(() => {
     if (!activeRunState || activeRunState.rows.length === 0) return [] as string[];
     const keys = Object.keys(activeRunState.rows[0]);
-    if (!keys.includes("id")) return keys;
-    return ["id", ...keys.filter((key) => key !== "id")];
+    const columns = keys.includes("id")
+      ? ["id", ...keys.filter((key) => key !== "id")]
+      : keys;
+    return orderTableColumns(columns, $activeTab?.view?.selectedColumns);
   });
+
+  const columnWidths = $derived.by(() => $activeTab?.view?.columnWidths ?? {});
 
   const resultTableWidth = $derived.by(() => {
     if (activeColumns.length === 0) return 0;
@@ -442,7 +456,10 @@
   function setColumnWidth(column: string, width: number): void {
     const clamped = Math.max(MIN_RESULT_COLUMN_WIDTH, Math.round(width));
     if (columnWidths[column] === clamped) return;
-    columnWidths = { ...columnWidths, [column]: clamped };
+    if (!$activeTab) return;
+    updateTabView($activeTab.id, {
+      columnWidths: { ...columnWidths, [column]: clamped }
+    });
   }
 
   function handleColumnResizerPointerDown(event: PointerEvent, column: string): void {
@@ -468,6 +485,63 @@
     event.preventDefault();
     (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
     columnResizeState = null;
+  }
+
+  function handleColumnDragPointerDown(event: PointerEvent, column: string): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId);
+    columnDragState = {
+      column,
+      target: null,
+      placeAfter: false,
+      x: event.clientX,
+      y: event.clientY
+    };
+  }
+
+  function handleColumnDragPointerMove(event: PointerEvent): void {
+    if (!columnDragState) return;
+    const targetElement = document.elementFromPoint(event.clientX, event.clientY);
+    const targetHeader = targetElement?.closest<HTMLElement>("th[data-column]");
+    const target = targetHeader?.dataset.column ?? null;
+    if (!targetHeader || !target || target === columnDragState.column) {
+      columnDragState = {
+        ...columnDragState,
+        target: null,
+        x: event.clientX,
+        y: event.clientY
+      };
+      return;
+    }
+    const bounds = targetHeader.getBoundingClientRect();
+    columnDragState = {
+      ...columnDragState,
+      target,
+      placeAfter: event.clientX >= bounds.left + bounds.width / 2,
+      x: event.clientX,
+      y: event.clientY
+    };
+  }
+
+  function handleColumnDragPointerUp(event: PointerEvent): void {
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
+    const dragState = columnDragState;
+    columnDragState = null;
+    if (!dragState?.target || !$activeTab) return;
+
+    const nextColumns = moveTableColumn(
+      activeColumns,
+      dragState.column,
+      dragState.target,
+      dragState.placeAfter
+    );
+    updateTabView($activeTab.id, { selectedColumns: nextColumns });
+  }
+
+  function handleColumnDragPointerCancel(event: PointerEvent): void {
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
+    columnDragState = null;
   }
 
   onMount(() => {
@@ -661,19 +735,6 @@
     if (currentWindow) {
       void currentWindow.setTitle(title);
     }
-  });
-
-  $effect(() => {
-    if (activeColumns.length === 0) return;
-    let changed = false;
-    const next = { ...columnWidths };
-    for (const column of activeColumns) {
-      if (next[column] === undefined) {
-        next[column] = DEFAULT_RESULT_COLUMN_WIDTH;
-        changed = true;
-      }
-    }
-    if (changed) columnWidths = next;
   });
 
   $effect(() => {
@@ -1910,7 +1971,24 @@
                           <thead>
                             <tr>
                               {#each activeColumns as column (column)}
-                                <th>
+                                <th
+                                  data-column={column}
+                                  class:column-drag-source={columnDragState?.column === column}
+                                  class:column-drag-over={columnDragState?.target === column}
+                                  class:column-drag-after={
+                                    columnDragState?.target === column && columnDragState.placeAfter}
+                                >
+                                  <button
+                                    class="column-drag-handle"
+                                    type="button"
+                                    aria-label={`Drag ${column} to reorder`}
+                                    title="Drag to reorder"
+                                    onpointerdown={(event) =>
+                                      handleColumnDragPointerDown(event, column)}
+                                    onpointermove={handleColumnDragPointerMove}
+                                    onpointerup={handleColumnDragPointerUp}
+                                    onpointercancel={handleColumnDragPointerCancel}
+                                  >⠿</button>
                                   <span class="column-label">{column}</span>
                                   <span
                                     class={`column-resizer ${columnResizeState?.column === column ? "active" : ""}`}
@@ -2000,6 +2078,21 @@
       </div>
     </section>
   </div>
+  {#if columnDragState}
+    <div
+      class="column-drag-preview"
+      style={`left: ${columnDragState.x}px; top: ${columnDragState.y}px;`}
+      aria-hidden="true"
+    >
+      <span>⠿</span>
+      <span class="column-drag-preview-label">{columnDragState.column}</span>
+      {#if columnDragState.target}
+        <span class="column-drag-preview-target">
+          {columnDragState.placeAfter ? "After" : "Before"} {columnDragState.target}
+        </span>
+      {/if}
+    </div>
+  {/if}
   {#if clientPaginationWarningOpen}
     <div
       class="confirm-backdrop"
@@ -2866,15 +2959,97 @@
     top: 0;
     z-index: 1;
     font-size: 0.7rem;
-    text-transform: uppercase;
     letter-spacing: 0.1em;
     color: rgba(var(--fw-slate-rgb), 0.9);
     background: #fff;
     padding-right: 18px;
   }
 
+  .result-table th.column-drag-source {
+    opacity: 0.38;
+  }
+
+  .result-table th.column-drag-over {
+    background: rgba(var(--fw-sky-rgb), 0.22);
+  }
+
+  .result-table th.column-drag-over::before {
+    content: "";
+    position: absolute;
+    z-index: 3;
+    top: -2px;
+    bottom: -2px;
+    left: -2px;
+    width: 3px;
+    border-radius: 999px;
+    background: var(--fw-whale);
+    box-shadow: 0 0 0 1px #fff, 0 0 8px rgba(var(--fw-whale-rgb), 0.45);
+  }
+
+  .result-table th.column-drag-over.column-drag-after::before {
+    right: -2px;
+    left: auto;
+  }
+
+  .column-drag-preview {
+    position: fixed;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 240px;
+    padding: 7px 10px;
+    overflow: hidden;
+    color: var(--fw-deep);
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(var(--fw-whale-rgb), 0.55);
+    border-radius: 7px;
+    box-shadow: 0 8px 18px rgba(var(--fw-deep-rgb), 0.2);
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    pointer-events: none;
+    transform: translate(14px, 14px);
+  }
+
+  .column-drag-preview-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .column-drag-preview-target {
+    padding-left: 6px;
+    color: var(--fw-slate);
+    border-left: 1px solid rgba(var(--fw-frost-rgb), 0.8);
+    font-size: 0.65rem;
+  }
+
   .column-label {
-    display: block;
+    display: inline;
+  }
+
+  .column-drag-handle {
+    border: 0;
+    margin: -4px 5px -4px -5px;
+    padding: 4px;
+    color: rgba(var(--fw-slate-rgb), 0.75);
+    background: transparent;
+    border-radius: 4px;
+    cursor: grab;
+    font: inherit;
+    line-height: 1;
+    touch-action: none;
+  }
+
+  .column-drag-handle:hover,
+  .column-drag-handle:focus-visible {
+    color: rgba(var(--fw-deep-rgb), 0.95);
+    background: rgba(var(--fw-whale-rgb), 0.12);
+    outline: none;
+  }
+
+  .column-drag-handle:active {
+    cursor: grabbing;
   }
 
   .column-resizer {
