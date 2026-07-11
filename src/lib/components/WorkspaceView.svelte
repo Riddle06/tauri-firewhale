@@ -106,7 +106,7 @@
   let resizeStartY = 0;
   let resizeStartHeight = 0;
   let columnResizeState = $state<ColumnResizeState | null>(null);
-  let columnDragState = $state<ColumnDragState | null>(null);
+  let columnDragState = $state<ColumnPointerDragState | null>(null);
   let contextMenu = $state<ContextMenuState>({
     open: false,
     x: 0,
@@ -200,7 +200,7 @@
     startWidth: number;
   };
 
-  type ColumnDragState = {
+  type ColumnPointerDragState = {
     column: string;
     target: string | null;
     placeAfter: boolean;
@@ -485,18 +485,23 @@
     columnResizeState = null;
   }
 
-  function handleColumnDragStart(event: DragEvent, column: string): void {
-    event.dataTransfer?.setData("text/plain", column);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  function handleColumnDragPointerDown(event: PointerEvent, column: string): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId);
     columnDragState = { column, target: null, placeAfter: false };
   }
 
-  function handleColumnDragOver(event: DragEvent, target: string): void {
-    if (!columnDragState || columnDragState.column === target) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    const targetElement = event.currentTarget as HTMLElement;
-    const bounds = targetElement.getBoundingClientRect();
+  function handleColumnDragPointerMove(event: PointerEvent): void {
+    if (!columnDragState) return;
+    const targetElement = document.elementFromPoint(event.clientX, event.clientY);
+    const targetHeader = targetElement?.closest<HTMLElement>("th[data-column]");
+    const target = targetHeader?.dataset.column ?? null;
+    if (!targetHeader || !target || target === columnDragState.column) {
+      columnDragState = { ...columnDragState, target: null };
+      return;
+    }
+    const bounds = targetHeader.getBoundingClientRect();
     columnDragState = {
       ...columnDragState,
       target,
@@ -504,22 +509,23 @@
     };
   }
 
-  function handleColumnDrop(event: DragEvent, target: string): void {
-    event.preventDefault();
+  function handleColumnDragPointerUp(event: PointerEvent): void {
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
     const dragState = columnDragState;
     columnDragState = null;
-    if (!dragState || !$activeTab) return;
+    if (!dragState?.target || !$activeTab) return;
 
     const nextColumns = moveTableColumn(
       activeColumns,
       dragState.column,
-      target,
+      dragState.target,
       dragState.placeAfter
     );
     updateTabView($activeTab.id, { selectedColumns: nextColumns });
   }
 
-  function handleColumnDragEnd(): void {
+  function handleColumnDragPointerCancel(event: PointerEvent): void {
+    (event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId);
     columnDragState = null;
   }
 
@@ -1951,15 +1957,22 @@
                             <tr>
                               {#each activeColumns as column (column)}
                                 <th
-                                  draggable="true"
+                                  data-column={column}
                                   class:column-drag-over={columnDragState?.target === column}
                                   class:column-drag-after={
                                     columnDragState?.target === column && columnDragState.placeAfter}
-                                  ondragstart={(event) => handleColumnDragStart(event, column)}
-                                  ondragover={(event) => handleColumnDragOver(event, column)}
-                                  ondrop={(event) => handleColumnDrop(event, column)}
-                                  ondragend={handleColumnDragEnd}
                                 >
+                                  <button
+                                    class="column-drag-handle"
+                                    type="button"
+                                    aria-label={`Drag ${column} to reorder`}
+                                    title="Drag to reorder"
+                                    onpointerdown={(event) =>
+                                      handleColumnDragPointerDown(event, column)}
+                                    onpointermove={handleColumnDragPointerMove}
+                                    onpointerup={handleColumnDragPointerUp}
+                                    onpointercancel={handleColumnDragPointerCancel}
+                                  >⠿</button>
                                   <span class="column-label">{column}</span>
                                   <span
                                     class={`column-resizer ${columnResizeState?.column === column ? "active" : ""}`}
@@ -2919,7 +2932,6 @@
     color: rgba(var(--fw-slate-rgb), 0.9);
     background: #fff;
     padding-right: 18px;
-    cursor: grab;
   }
 
   .result-table th.column-drag-over {
@@ -2930,12 +2942,32 @@
     box-shadow: inset -2px 0 0 rgba(var(--fw-whale-rgb), 0.75);
   }
 
-  .result-table th:active {
-    cursor: grabbing;
+  .column-label {
+    display: inline;
   }
 
-  .column-label {
-    display: block;
+  .column-drag-handle {
+    border: 0;
+    margin: -4px 5px -4px -5px;
+    padding: 4px;
+    color: rgba(var(--fw-slate-rgb), 0.75);
+    background: transparent;
+    border-radius: 4px;
+    cursor: grab;
+    font: inherit;
+    line-height: 1;
+    touch-action: none;
+  }
+
+  .column-drag-handle:hover,
+  .column-drag-handle:focus-visible {
+    color: rgba(var(--fw-deep-rgb), 0.95);
+    background: rgba(var(--fw-whale-rgb), 0.12);
+    outline: none;
+  }
+
+  .column-drag-handle:active {
+    cursor: grabbing;
   }
 
   .column-resizer {
