@@ -344,13 +344,24 @@ export function validateQueryAst(ast: QueryAst): string[] {
   for (const join of ast.joins ?? []) {
     if (!join.collectionPath) errors.push("join() requires a collection path.");
     if (!isAlias(join.alias)) errors.push("join() alias must be an identifier.");
-    if (aliases.has(join.alias)) errors.push(`Duplicate collection alias: ${join.alias}.`);
-    aliases.add(join.alias);
+    if (aliases.has(join.alias)) {
+      errors.push(`Duplicate collection alias: ${join.alias}.`);
+    }
     if (join.op !== "==") errors.push("join() supports only the == operator.");
     const targetPrefix = `${join.alias}.`;
-    if (!join.leftField.startsWith(targetPrefix) || !join.leftField.endsWith(".id")) {
-      errors.push("join() must compare the joined alias id, for example w.id.");
+    if (!join.leftField.startsWith(targetPrefix) || join.leftField === targetPrefix) {
+      errors.push(`join() left field must reference ${join.alias}.`);
     }
+    const sourceAlias = join.rightField.split(".")[0] ?? "";
+    if (
+      ast.collectionAlias &&
+      join.rightField.includes(".") &&
+      sourceAlias !== ast.collectionAlias &&
+      !aliases.has(sourceAlias)
+    ) {
+      errors.push(`Unknown or forward join alias: ${sourceAlias}.`);
+    }
+    aliases.add(join.alias);
   }
   const joinedPrefixes = (ast.joins ?? []).map((join) => `${join.alias}.`);
   for (const clause of [...ast.where, ...ast.orderBy]) {

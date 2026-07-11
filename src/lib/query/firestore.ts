@@ -41,6 +41,8 @@ const tokenCache = new Map<string, TokenCacheEntry>();
 const FIRESTORE_SCOPE = "https://www.googleapis.com/auth/datastore";
 const DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token";
 const DEFAULT_PAGE_SIZE = 50;
+const JOIN_IN_VALUE_LIMIT = 30;
+const JOIN_REQUEST_CONCURRENCY = 4;
 
 const OPERATOR_MAP: Record<WhereClause["op"], string> = {
   "==": "EQUAL",
@@ -318,6 +320,45 @@ function normalizeDocumentId(value: unknown): string | null {
   return segments[segments.length - 1] ?? null;
 }
 
+function getJoinValueKey(value: unknown): string | null {
+  if (value === null) return "null";
+  if (typeof value === "string") return `string:${value}`;
+  if (typeof value === "number") return `number:${value}`;
+  if (typeof value === "boolean") return `boolean:${value}`;
+  return null;
+}
+
+function splitJoinReference(
+  reference: string,
+  collectionAlias: string | undefined,
+  joinAliases: Set<string>
+): { alias?: string; field: string } {
+  const [first, ...rest] = reference.split(".");
+  if (rest.length > 0 && (first === collectionAlias || joinAliases.has(first))) {
+    return { alias: first, field: rest.join(".") };
+  }
+  return { field: reference };
+}
+
+function chunkValues<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  handler: (value: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (const chunk of chunkValues(values, JOIN_REQUEST_CONCURRENCY)) {
+    results.push(...await Promise.all(chunk.map(handler)));
+  }
+  return results;
+}
+
 function decodeFirestoreDocument(document?: FirestoreDocument): Record<string, unknown> | null {
   if (!document) return null;
   const fields = document.fields ?? {};
@@ -355,58 +396,200 @@ function parseRunQueryResponse(payload: unknown): Record<string, unknown>[] {
   return rows;
 }
 
-async function fetchFirestoreDocument(
+function parseBatchGetResponse(payload: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(payload)) return [];
+  const rows: Record<string, unknown>[] = [];
+  for (const entry of payload) {
+    const document = (entry as { found?: FirestoreDocument }).found;
+    const row = decodeFirestoreDocument(document);
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+function getDocumentJoinId(document: Record<string, unknown>): unknown {
+  const documentId = (document as { __docId?: unknown }).__docId;
+  return documentId ?? document.id;
+}
+
+function getRunQueryUrl(projectId: string, collectionPath: string): string {
+  const { parentPath } = splitCollectionPath(collectionPath);
+  const parent = parentPath
+    ? `projects/${projectId}/databases/(default)/documents/${parentPath}`
+    : `projects/${projectId}/databases/(default)/documents`;
+  return `https://firestore.googleapis.com/v1/${parent}:runQuery`;
+}
+
+async function fetchFirestoreDocumentsById(
   projectId: string,
   accessToken: string,
   collectionPath: string,
-  documentId: string
-): Promise<Record<string, unknown> | null> {
-  const path = buildDocumentPath(collectionPath, documentId);
+  documentIds: string[]
+): Promise<Record<string, unknown>[]> {
+  if (documentIds.length === 0) return [];
+  const basePath = `projects/${projectId}/databases/(default)/documents`;
   const response = await fetch(
-    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${path}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } }
+    `https://firestore.googleapis.com/v1/${basePath}:batchGet`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        documents: documentIds.map((id) => `${basePath}/${buildDocumentPath(collectionPath, id)}`)
+      })
+    }
   );
-  if (response.status === 404) return null;
   if (!response.ok) {
     const message = await response.text();
     throw new Error(`Firestore join request failed (${response.status}): ${message}`);
   }
-  return decodeFirestoreDocument((await response.json()) as FirestoreDocument);
+  return parseBatchGetResponse((await response.json()) as unknown[]);
 }
 
-async function applyFirestoreJoins(
+async function fetchFirestoreDocumentsByField(
+  projectId: string,
+  accessToken: string,
+  collectionPath: string,
+  field: string,
+  values: unknown[]
+): Promise<Record<string, unknown>[]> {
+  const url = getRunQueryUrl(projectId, collectionPath);
+  const chunks = chunkValues(values, JOIN_IN_VALUE_LIMIT);
+  const responses = await mapWithConcurrency(chunks, async (chunk) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId: splitCollectionPath(collectionPath).collectionId }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath: field },
+              op: "IN",
+              value: encodeFirestoreValue(chunk)
+            }
+          }
+        }
+      })
+    });
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(`Firestore join request failed (${response.status}): ${message}`);
+    }
+    return parseRunQueryResponse(await response.json());
+  });
+  return responses.flat();
+}
+
+type JoinedRow = { main: Record<string, unknown>; output: Record<string, unknown> };
+
+function getJoinSourceValues(
+  output: Record<string, unknown>,
+  reference: string,
+  collectionAlias: string | undefined,
+  joinAliases: Set<string>
+): unknown[] {
+  const parsed = splitJoinReference(reference, collectionAlias, joinAliases);
+  if (parsed.alias && parsed.alias !== collectionAlias) {
+    const sourceRows = output[parsed.alias];
+    if (!Array.isArray(sourceRows)) return [];
+    return sourceRows.map((row) =>
+      row && typeof row === "object" ? resolveRowField(row as Record<string, unknown>, parsed.field) : undefined
+    );
+  }
+  return [resolveRowField(output, parsed.field)];
+}
+
+function addJoinResult(
+  output: Record<string, unknown>,
+  alias: string,
+  documents: Record<string, unknown>[]
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = { [alias]: documents };
+  const keys = new Set(documents.flatMap((document) => Object.keys(document)));
+  for (const key of keys) {
+    fields[`${alias}.${key}`] = documents.map((document) => document[key]);
+  }
+  return { ...output, ...fields };
+}
+
+export async function applyFirestoreJoins(
   projectId: string,
   accessToken: string,
   ast: QueryAst,
   rows: Record<string, unknown>[]
-): Promise<Record<string, unknown>[]> {
+): Promise<{ rows: Record<string, unknown>[]; warnings: string[] }> {
   const joins = ast.joins ?? [];
-  if (joins.length === 0 || rows.length === 0) return rows;
-  let joinedRows = rows.map((main) => ({ main, output: { ...main } }));
+  if (joins.length === 0 || rows.length === 0) return { rows, warnings: [] };
+  const warnings: string[] = [];
+  let joinedRows: JoinedRow[] = rows.map((main) => ({ main, output: { ...main } }));
+  const joinAliases = new Set<string>();
 
   for (const join of joins) {
-    const rightField = normalizeMainField(join.rightField, ast.collectionAlias);
-    const ids = [...new Set(joinedRows
-      .map(({ output }) => normalizeDocumentId(resolveRowField(output, rightField)))
-      .filter((id): id is string => Boolean(id)))];
-    const documents = new Map<string, Record<string, unknown> | null>();
-    await Promise.all(ids.map(async (id) => {
-      documents.set(id, await fetchFirestoreDocument(projectId, accessToken, join.collectionPath, id));
-    }));
+    const left = splitJoinReference(
+      join.leftField,
+      ast.collectionAlias,
+      new Set([...joinAliases, join.alias])
+    );
+    const sources = new Map<string, unknown>();
+    let skippedValues = 0;
+    for (const { output } of joinedRows) {
+      for (const value of getJoinSourceValues(output, join.rightField, ast.collectionAlias, joinAliases)) {
+        const normalizedValue = left.field === "id" ? normalizeDocumentId(value) : value;
+        const key = getJoinValueKey(normalizedValue);
+        if (key) {
+          sources.set(key, normalizedValue);
+        } else if (value !== undefined) {
+          skippedValues += 1;
+        }
+      }
+    }
+    if (skippedValues > 0) {
+      warnings.push(`Join ${join.alias} skipped ${skippedValues} unsupported source value(s).`);
+    }
+
+    const matches = new Map<string, Record<string, unknown>[]>();
+    if (left.field === "id") {
+      const ids = [...sources.values()]
+        .map(normalizeDocumentId)
+        .filter((id): id is string => Boolean(id));
+      const documents = (await mapWithConcurrency(chunkValues(ids, JOIN_IN_VALUE_LIMIT), (chunk) =>
+        fetchFirestoreDocumentsById(projectId, accessToken, join.collectionPath, chunk)
+      )).flat();
+      for (const document of documents) {
+        const key = getJoinValueKey(getDocumentJoinId(document));
+        if (key) matches.set(key, [document]);
+      }
+    } else if (sources.size > 0) {
+      const documents = await fetchFirestoreDocumentsByField(
+        projectId,
+        accessToken,
+        join.collectionPath,
+        left.field,
+        [...sources.values()]
+      );
+      for (const document of documents) {
+        const key = getJoinValueKey(resolveRowField(document, left.field));
+        if (!key) continue;
+        matches.set(key, [...(matches.get(key) ?? []), document]);
+      }
+    }
+
     joinedRows = joinedRows.map(({ main, output }) => {
-      const id = normalizeDocumentId(resolveRowField(output, rightField));
-      const joined = id ? documents.get(id) : null;
-      const fields = joined
-        ? Object.fromEntries(Object.entries(joined).map(([key, value]) => [`${join.alias}.${key}`, value]))
-        : {};
-      return { main, output: { ...output, ...fields } };
+      const documents = getJoinSourceValues(output, join.rightField, ast.collectionAlias, joinAliases)
+        .flatMap((value) => {
+          const normalizedValue = left.field === "id" ? normalizeDocumentId(value) : value;
+          return matches.get(getJoinValueKey(normalizedValue) ?? "") ?? [];
+        });
+      return { main, output: addJoinResult(output, join.alias, documents) };
     });
+    joinAliases.add(join.alias);
   }
 
-  return joinedRows.map(({ main, output }) => {
+  const outputRows = joinedRows.map(({ main, output }) => {
     Object.defineProperty(output, "__mainRow", { value: main, enumerable: false });
     return output;
   });
+  return { rows: outputRows, warnings };
 }
 
 function parseCountResponse(payload: unknown): number {
@@ -487,15 +670,21 @@ export async function runFirestoreQuery(
   }
 
   const payload = await response.json();
-  const rows = await applyFirestoreJoins(projectId, accessToken, ast, parseRunQueryResponse(payload));
+  const joined = await applyFirestoreJoins(
+    projectId,
+    accessToken,
+    ast,
+    parseRunQueryResponse(payload)
+  );
+  warnings.push(...joined.warnings);
 
   return {
-    rows,
+    rows: joined.rows,
     warnings,
     durationMs: Date.now() - start,
     pageIndex,
     pageSize,
-    hasNextPage: rows.length === pageSize
+    hasNextPage: joined.rows.length === pageSize
   };
 }
 
@@ -548,10 +737,16 @@ export async function runFirestoreQueryAll(
   }
 
   const payload = await response.json();
-  const rows = await applyFirestoreJoins(projectId, accessToken, ast, parseRunQueryResponse(payload));
+  const joined = await applyFirestoreJoins(
+    projectId,
+    accessToken,
+    ast,
+    parseRunQueryResponse(payload)
+  );
+  warnings.push(...joined.warnings);
 
   return {
-    rows,
+    rows: joined.rows,
     warnings,
     durationMs: Date.now() - start
   };

@@ -38,6 +38,18 @@ describe("parseQueryChain", () => {
     }
   });
 
+  test("validates join aliases and main-table filters", () => {
+    const parsed = parseQueryChain(
+      "collection('steps', 's').join('workflows', 'w', 'w.slug', '==', 's.slug').join('owners', 'o', 'o.id', '==', 'w.ownerId').where('w.name', '==', 'blocked').get()"
+    );
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(validateQueryAst(parsed.ast)).toEqual([
+        "where() and orderBy() can only reference the main collection."
+      ]);
+    }
+  });
+
   test("fails on missing get()", () => {
     const input = "db.collection('users').where('age', '>', 18)";
     const result = parseQueryChain(input);
