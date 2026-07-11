@@ -204,6 +204,8 @@
     column: string;
     target: string | null;
     placeAfter: boolean;
+    x: number;
+    y: number;
   };
 
   type ContextMenuState = {
@@ -489,7 +491,13 @@
     if (event.button !== 0) return;
     event.preventDefault();
     (event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId);
-    columnDragState = { column, target: null, placeAfter: false };
+    columnDragState = {
+      column,
+      target: null,
+      placeAfter: false,
+      x: event.clientX,
+      y: event.clientY
+    };
   }
 
   function handleColumnDragPointerMove(event: PointerEvent): void {
@@ -498,14 +506,21 @@
     const targetHeader = targetElement?.closest<HTMLElement>("th[data-column]");
     const target = targetHeader?.dataset.column ?? null;
     if (!targetHeader || !target || target === columnDragState.column) {
-      columnDragState = { ...columnDragState, target: null };
+      columnDragState = {
+        ...columnDragState,
+        target: null,
+        x: event.clientX,
+        y: event.clientY
+      };
       return;
     }
     const bounds = targetHeader.getBoundingClientRect();
     columnDragState = {
       ...columnDragState,
       target,
-      placeAfter: event.clientX >= bounds.left + bounds.width / 2
+      placeAfter: event.clientX >= bounds.left + bounds.width / 2,
+      x: event.clientX,
+      y: event.clientY
     };
   }
 
@@ -1958,6 +1973,7 @@
                               {#each activeColumns as column (column)}
                                 <th
                                   data-column={column}
+                                  class:column-drag-source={columnDragState?.column === column}
                                   class:column-drag-over={columnDragState?.target === column}
                                   class:column-drag-after={
                                     columnDragState?.target === column && columnDragState.placeAfter}
@@ -2062,6 +2078,21 @@
       </div>
     </section>
   </div>
+  {#if columnDragState}
+    <div
+      class="column-drag-preview"
+      style={`left: ${columnDragState.x}px; top: ${columnDragState.y}px;`}
+      aria-hidden="true"
+    >
+      <span>⠿</span>
+      <span class="column-drag-preview-label">{columnDragState.column}</span>
+      {#if columnDragState.target}
+        <span class="column-drag-preview-target">
+          {columnDragState.placeAfter ? "After" : "Before"} {columnDragState.target}
+        </span>
+      {/if}
+    </div>
+  {/if}
   {#if clientPaginationWarningOpen}
     <div
       class="confirm-backdrop"
@@ -2934,12 +2965,63 @@
     padding-right: 18px;
   }
 
-  .result-table th.column-drag-over {
-    box-shadow: inset 2px 0 0 rgba(var(--fw-whale-rgb), 0.75);
+  .result-table th.column-drag-source {
+    opacity: 0.38;
   }
 
-  .result-table th.column-drag-over.column-drag-after {
-    box-shadow: inset -2px 0 0 rgba(var(--fw-whale-rgb), 0.75);
+  .result-table th.column-drag-over {
+    background: rgba(var(--fw-sky-rgb), 0.22);
+  }
+
+  .result-table th.column-drag-over::before {
+    content: "";
+    position: absolute;
+    z-index: 3;
+    top: -2px;
+    bottom: -2px;
+    left: -2px;
+    width: 3px;
+    border-radius: 999px;
+    background: var(--fw-whale);
+    box-shadow: 0 0 0 1px #fff, 0 0 8px rgba(var(--fw-whale-rgb), 0.45);
+  }
+
+  .result-table th.column-drag-over.column-drag-after::before {
+    right: -2px;
+    left: auto;
+  }
+
+  .column-drag-preview {
+    position: fixed;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 240px;
+    padding: 7px 10px;
+    overflow: hidden;
+    color: var(--fw-deep);
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(var(--fw-whale-rgb), 0.55);
+    border-radius: 7px;
+    box-shadow: 0 8px 18px rgba(var(--fw-deep-rgb), 0.2);
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    pointer-events: none;
+    transform: translate(14px, 14px);
+  }
+
+  .column-drag-preview-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .column-drag-preview-target {
+    padding-left: 6px;
+    color: var(--fw-slate);
+    border-left: 1px solid rgba(var(--fw-frost-rgb), 0.8);
+    font-size: 0.65rem;
   }
 
   .column-label {
