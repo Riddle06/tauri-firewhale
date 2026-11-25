@@ -18,6 +18,7 @@
   import type { TimestampDisplayOptions } from "$lib/utils/timestamp";
   import {
     formatDocumentJson,
+    getChangedDocumentFieldPaths,
     isDocumentJsonDirty,
     parseDocumentJson
   } from "$lib/utils/document-json";
@@ -48,6 +49,7 @@
     tabId?: string;
     connectionId?: string;
     idIsSynthetic?: boolean;
+    useUpdateMask?: boolean;
   };
 
   type DocumentUpdatedPayload = {
@@ -73,6 +75,7 @@
   let viewTabId = $state<string | null>(null);
   let viewConnectionId = $state<string | null>(null);
   let idIsSynthetic = $state(false);
+  let useUpdateMask = $state(false);
   let sourceRow = $state<Record<string, unknown> | null>(null);
   let timestampDisplayOptions = $state<TimestampDisplayOptions>(readTimestampDisplayOptions());
   let documentJson = $state("");
@@ -168,6 +171,7 @@
       viewConnectionId = nextPayload.connectionId;
     }
     idIsSynthetic = Boolean(nextPayload.idIsSynthetic);
+    useUpdateMask = viewMode === "edit" && nextPayload.useUpdateMask === true;
     const nextTitle = nextPayload.title ?? buildTitle(viewCollection, viewDocumentId, viewMode);
     setWindowTitle(nextTitle);
 
@@ -237,7 +241,8 @@
       saveError = "Missing workspace context.";
       return;
     }
-    if (!$activeConnection) {
+    const connection = saveConnection;
+    if (!connection) {
       saveError = "Connection not ready.";
       return;
     }
@@ -259,7 +264,7 @@
           id: idResult.value
         };
         const createdRow = await createFirestoreDocument(
-          $activeConnection,
+          connection,
           viewCollection,
           idResult.value,
           createData
@@ -283,11 +288,25 @@
           saveError = "Missing document id.";
           return;
         }
+        let updateMask: string[] | undefined;
+        if (useUpdateMask) {
+          const initial = parseDocumentJson(initialJson);
+          if (!initial.ok) {
+            saveError = "Could not determine which document fields changed.";
+            return;
+          }
+          updateMask = getChangedDocumentFieldPaths(initial.value, parsed.value);
+          if (updateMask.length === 0) {
+            closeWindow();
+            return;
+          }
+        }
         const updatedRow = await updateFirestoreDocument(
-          $activeConnection,
+          connection,
           viewCollection,
           viewDocumentId,
-          parsed.value
+          parsed.value,
+          { updateMask }
         );
         const updatePayload: DocumentUpdatedPayload = {
           tabId: viewTabId,
@@ -349,6 +368,9 @@
   }
 
   const isDirty = $derived.by(() => isDocumentJsonDirty(initialJson, documentJson));
+  const saveConnection = $derived(
+    useUpdateMask && $activeConnection?.id !== viewConnectionId ? null : $activeConnection
+  );
   const canSave = $derived.by(
     () =>
       documentReady &&
@@ -359,7 +381,7 @@
       Boolean(viewCollection) &&
       (viewMode === "create" || Boolean(viewDocumentId)) &&
       Boolean(viewTabId) &&
-      Boolean($activeConnection)
+      Boolean(saveConnection)
   );
   const saveButtonLabel = $derived.by(() => {
     if (saving) {

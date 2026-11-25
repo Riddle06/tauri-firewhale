@@ -2,6 +2,8 @@ import { isTauri } from "@tauri-apps/api/core";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { SignJWT, importPKCS8 } from "jose";
 import type { ConnectionProfile } from "$lib/models";
+import { compactFieldPaths, normalizeMainField } from "$lib/query/field-path";
+import { projectRow } from "$lib/query/result-rows";
 import type { QueryAst, QueryRunResult, WhereClause } from "$lib/query/types";
 import {
   encodeFirestoreFields,
@@ -168,6 +170,26 @@ async function getAccessToken(serviceAccount: ServiceAccount): Promise<string> {
   return payload.access_token;
 }
 
+async function getConnectionAccess(
+  connection: ConnectionProfile
+): Promise<{ projectId: string; accessToken: string }> {
+  const serviceAccount = await loadServiceAccount(connection.auth.encryptedPayloadRef);
+  if (
+    connection.projectId &&
+    serviceAccount.project_id &&
+    connection.projectId !== serviceAccount.project_id
+  ) {
+    throw new Error("Project ID does not match credential.");
+  }
+
+  const projectId = connection.projectId || serviceAccount.project_id;
+  if (!projectId) {
+    throw new Error("Project ID is missing.");
+  }
+
+  return { projectId, accessToken: await getAccessToken(serviceAccount) };
+}
+
 async function listCollectionIds(
   projectId: string,
   accessToken: string
@@ -236,10 +258,10 @@ export async function fetchCollectionsForConnection(
 }
 
 type StructuredQueryOptions = {
-  pageSize?: number;
-  pageIndex?: number;
   includeOrderBy?: boolean;
-  includeLimit?: boolean;
+  includeSelect?: boolean;
+  limit?: number;
+  offset?: number;
 };
 
 function buildStructuredQuery(
@@ -250,6 +272,12 @@ function buildStructuredQuery(
   const structuredQuery: Record<string, unknown> = {
     from: [{ collectionId }]
   };
+
+  if (options.includeSelect !== false && ast.select) {
+    structuredQuery.select = {
+      fields: compactFieldPaths(ast.select).map((fieldPath) => ({ fieldPath }))
+    };
+  }
 
   const filter = buildFirestoreFilter(ast.where);
   if (filter) {
@@ -263,11 +291,11 @@ function buildStructuredQuery(
     }));
   }
 
-  if (options.includeLimit !== false) {
-    const pageSize = options.pageSize ?? DEFAULT_PAGE_SIZE;
-    const pageIndex = options.pageIndex ?? 0;
-    structuredQuery.offset = pageIndex * pageSize;
-    structuredQuery.limit = pageSize;
+  if (options.offset !== undefined) {
+    structuredQuery.offset = options.offset;
+  }
+  if (options.limit !== undefined) {
+    structuredQuery.limit = options.limit;
   }
 
   return structuredQuery;
@@ -287,14 +315,19 @@ function buildDocumentPath(collectionPath: string, documentId: string): string {
   return `${normalizedCollection}/${normalizedId}`;
 }
 
-function normalizeMainField(field: string, collectionAlias?: string): string {
-  const prefix = collectionAlias ? `${collectionAlias}.` : "";
-  return prefix && field.startsWith(prefix) ? field.slice(prefix.length) : field;
+function encodeDocumentPath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+function getDocumentUrl(projectId: string, collectionPath: string, documentId: string): URL {
+  const path = encodeDocumentPath(buildDocumentPath(collectionPath, documentId));
+  return new URL(`https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${path}`);
 }
 
 function normalizeMainQuery(ast: QueryAst): QueryAst {
   return {
     ...ast,
+    select: ast.select?.map((field) => normalizeMainField(field, ast.collectionAlias)),
     where: ast.where.map((clause) => ({
       ...clause,
       field: normalizeMainField(clause.field, ast.collectionAlias)
@@ -359,7 +392,10 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-function decodeFirestoreDocument(document?: FirestoreDocument): Record<string, unknown> | null {
+function decodeFirestoreDocument(
+  document?: FirestoreDocument,
+  synthesizeId = true
+): Record<string, unknown> | null {
   if (!document) return null;
   const fields = document.fields ?? {};
   const row: Record<string, unknown> = {};
@@ -368,8 +404,8 @@ function decodeFirestoreDocument(document?: FirestoreDocument): Record<string, u
   }
   const documentId = extractDocumentId(document.name);
   if (documentId) {
-    const hasIdField = Object.prototype.hasOwnProperty.call(row, "id");
-    if (!hasIdField) {
+    const idIsSynthetic = synthesizeId && !Object.prototype.hasOwnProperty.call(row, "id");
+    if (idIsSynthetic) {
       row.id = documentId;
     }
     Object.defineProperty(row, "__docId", {
@@ -377,19 +413,22 @@ function decodeFirestoreDocument(document?: FirestoreDocument): Record<string, u
       enumerable: false
     });
     Object.defineProperty(row, "__idSynthetic", {
-      value: !hasIdField,
+      value: idIsSynthetic,
       enumerable: false
     });
   }
   return row;
 }
 
-function parseRunQueryResponse(payload: unknown): Record<string, unknown>[] {
+function parseRunQueryResponse(
+  payload: unknown,
+  synthesizeId = true
+): Record<string, unknown>[] {
   if (!Array.isArray(payload)) return [];
   const rows: Record<string, unknown>[] = [];
   for (const entry of payload) {
     const document = (entry as { document?: FirestoreDocument }).document;
-    const row = decodeFirestoreDocument(document);
+    const row = decodeFirestoreDocument(document, synthesizeId);
     if (!row) continue;
     rows.push(row);
   }
@@ -412,12 +451,16 @@ function getDocumentJoinId(document: Record<string, unknown>): unknown {
   return documentId ?? document.id;
 }
 
-function getRunQueryUrl(projectId: string, collectionPath: string): string {
+function getQueryUrl(
+  projectId: string,
+  collectionPath: string,
+  method: "runQuery" | "runAggregationQuery"
+): string {
   const { parentPath } = splitCollectionPath(collectionPath);
   const parent = parentPath
-    ? `projects/${projectId}/databases/(default)/documents/${parentPath}`
+    ? `projects/${projectId}/databases/(default)/documents/${encodeDocumentPath(parentPath)}`
     : `projects/${projectId}/databases/(default)/documents`;
-  return `https://firestore.googleapis.com/v1/${parent}:runQuery`;
+  return `https://firestore.googleapis.com/v1/${parent}:${method}`;
 }
 
 async function fetchFirestoreDocumentsById(
@@ -452,7 +495,7 @@ async function fetchFirestoreDocumentsByField(
   field: string,
   values: unknown[]
 ): Promise<Record<string, unknown>[]> {
-  const url = getRunQueryUrl(projectId, collectionPath);
+  const url = getQueryUrl(projectId, collectionPath, "runQuery");
   const chunks = chunkValues(values, JOIN_IN_VALUE_LIMIT);
   const responses = await mapWithConcurrency(chunks, async (chunk) => {
     const response = await fetch(url, {
@@ -592,22 +635,23 @@ export async function applyFirestoreJoins(
   return { rows: outputRows, warnings };
 }
 
+type AggregationResult = { result?: { aggregateFields?: Record<string, FirestoreValue> } };
+
 function parseCountResponse(payload: unknown): number {
-  if (!Array.isArray(payload)) return 0;
-  for (const entry of payload) {
-    const result = (entry as { result?: { aggregateFields?: Record<string, FirestoreValue> } }).result;
-    const fields = result?.aggregateFields;
-    if (!fields) continue;
-    const countField = fields.total ?? fields.count ?? Object.values(fields)[0];
-    if (!countField) continue;
-    const decoded = decodeFirestoreValue(countField);
-    if (typeof decoded === "number") return decoded;
-    if (typeof decoded === "string") {
-      const parsed = Number(decoded);
-      if (Number.isFinite(parsed)) return parsed;
+  if (Array.isArray(payload)) {
+    for (const entry of payload) {
+      const result = (entry as AggregationResult | null)?.result;
+      const count = result?.aggregateFields?.total?.integerValue;
+      if (typeof count === "string" && /^\d+$/.test(count)) {
+        const parsed = Number(count);
+        if (!Number.isSafeInteger(parsed)) {
+          throw new Error("Firestore count exceeds the supported integer range.");
+        }
+        return parsed;
+      }
     }
   }
-  return 0;
+  throw new Error("Firestore response did not include a valid count.");
 }
 
 export async function runFirestoreQuery(
@@ -630,28 +674,8 @@ export async function runFirestoreQuery(
     warnings.push(`No limit specified. Using default page size ${pageSize}.`);
   }
 
-  const credentialPath = connection.auth.encryptedPayloadRef;
-  const serviceAccount = await loadServiceAccount(credentialPath);
-  if (
-    connection.projectId &&
-    serviceAccount.project_id &&
-    connection.projectId !== serviceAccount.project_id
-  ) {
-    throw new Error("Project ID does not match credential.");
-  }
-
-  const projectId = connection.projectId || serviceAccount.project_id;
-
-  if (!projectId) {
-    throw new Error("Project ID is missing.");
-  }
-
-  const accessToken = await getAccessToken(serviceAccount);
-  const { parentPath } = splitCollectionPath(ast.collectionPath);
-  const baseParent = parentPath
-    ? `projects/${projectId}/databases/(default)/documents/${parentPath}`
-    : `projects/${projectId}/databases/(default)/documents`;
-  const url = `https://firestore.googleapis.com/v1/${baseParent}:runQuery`;
+  const { projectId, accessToken } = await getConnectionAccess(connection);
+  const url = getQueryUrl(projectId, ast.collectionPath, "runQuery");
 
   const response = await fetch(url, {
     method: "POST",
@@ -660,7 +684,10 @@ export async function runFirestoreQuery(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), { pageSize, pageIndex })
+      structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), {
+        limit: pageSize,
+        offset: pageIndex * pageSize
+      })
     })
   });
 
@@ -674,7 +701,7 @@ export async function runFirestoreQuery(
     projectId,
     accessToken,
     ast,
-    parseRunQueryResponse(payload)
+    parseRunQueryResponse(payload, ast.select === undefined)
   );
   warnings.push(...joined.warnings);
 
@@ -694,28 +721,8 @@ export async function runFirestoreQueryAll(
 ): Promise<QueryRunResult> {
   const start = Date.now();
   const warnings: string[] = [];
-  const credentialPath = connection.auth.encryptedPayloadRef;
-  const serviceAccount = await loadServiceAccount(credentialPath);
-  if (
-    connection.projectId &&
-    serviceAccount.project_id &&
-    connection.projectId !== serviceAccount.project_id
-  ) {
-    throw new Error("Project ID does not match credential.");
-  }
-
-  const projectId = connection.projectId || serviceAccount.project_id;
-
-  if (!projectId) {
-    throw new Error("Project ID is missing.");
-  }
-
-  const accessToken = await getAccessToken(serviceAccount);
-  const { parentPath } = splitCollectionPath(ast.collectionPath);
-  const baseParent = parentPath
-    ? `projects/${projectId}/databases/(default)/documents/${parentPath}`
-    : `projects/${projectId}/databases/(default)/documents`;
-  const url = `https://firestore.googleapis.com/v1/${baseParent}:runQuery`;
+  const { projectId, accessToken } = await getConnectionAccess(connection);
+  const url = getQueryUrl(projectId, ast.collectionPath, "runQuery");
 
   const response = await fetch(url, {
     method: "POST",
@@ -725,7 +732,6 @@ export async function runFirestoreQueryAll(
     },
     body: JSON.stringify({
       structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), {
-        includeLimit: false,
         includeOrderBy: false
       })
     })
@@ -741,7 +747,7 @@ export async function runFirestoreQueryAll(
     projectId,
     accessToken,
     ast,
-    parseRunQueryResponse(payload)
+    parseRunQueryResponse(payload, ast.select === undefined)
   );
   warnings.push(...joined.warnings);
 
@@ -754,30 +760,12 @@ export async function runFirestoreQueryAll(
 
 export async function runFirestoreCountQuery(
   connection: ConnectionProfile,
-  ast: QueryAst
+  ast: QueryAst,
+  options: { honorQueryConstraints?: boolean } = {}
 ): Promise<number> {
-  const credentialPath = connection.auth.encryptedPayloadRef;
-  const serviceAccount = await loadServiceAccount(credentialPath);
-  if (
-    connection.projectId &&
-    serviceAccount.project_id &&
-    connection.projectId !== serviceAccount.project_id
-  ) {
-    throw new Error("Project ID does not match credential.");
-  }
-
-  const projectId = connection.projectId || serviceAccount.project_id;
-
-  if (!projectId) {
-    throw new Error("Project ID is missing.");
-  }
-
-  const accessToken = await getAccessToken(serviceAccount);
-  const { parentPath } = splitCollectionPath(ast.collectionPath);
-  const baseParent = parentPath
-    ? `projects/${projectId}/databases/(default)/documents/${parentPath}`
-    : `projects/${projectId}/databases/(default)/documents`;
-  const url = `https://firestore.googleapis.com/v1/${baseParent}:runAggregationQuery`;
+  const { honorQueryConstraints = false } = options;
+  const { projectId, accessToken } = await getConnectionAccess(connection);
+  const url = getQueryUrl(projectId, ast.collectionPath, "runAggregationQuery");
 
   const response = await fetch(url, {
     method: "POST",
@@ -788,8 +776,9 @@ export async function runFirestoreCountQuery(
     body: JSON.stringify({
       structuredAggregationQuery: {
         structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), {
-          includeLimit: false,
-          includeOrderBy: false
+          includeOrderBy: honorQueryConstraints,
+          includeSelect: false,
+          limit: honorQueryConstraints ? ast.limit : undefined
         }),
         aggregations: [{ alias: "total", count: {} }]
       }
@@ -805,11 +794,10 @@ export async function runFirestoreCountQuery(
   return parseCountResponse(payload);
 }
 
-export async function updateFirestoreDocument(
+export async function getFirestoreDocument(
   connection: ConnectionProfile,
   collectionPath: string,
-  documentId: string,
-  data: Record<string, unknown>
+  documentId: string
 ): Promise<Record<string, unknown>> {
   if (!collectionPath) {
     throw new Error("Collection path is missing.");
@@ -817,25 +805,52 @@ export async function updateFirestoreDocument(
   if (!documentId) {
     throw new Error("Document id is missing.");
   }
-  const credentialPath = connection.auth.encryptedPayloadRef;
-  const serviceAccount = await loadServiceAccount(credentialPath);
-  if (
-    connection.projectId &&
-    serviceAccount.project_id &&
-    connection.projectId !== serviceAccount.project_id
-  ) {
-    throw new Error("Project ID does not match credential.");
+  const { projectId, accessToken } = await getConnectionAccess(connection);
+  const url = getDocumentUrl(projectId, collectionPath, documentId);
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Firestore request failed (${response.status}): ${message}`);
   }
 
-  const projectId = connection.projectId || serviceAccount.project_id;
-
-  if (!projectId) {
-    throw new Error("Project ID is missing.");
+  const payload = (await response.json()) as FirestoreDocument | null;
+  const row = payload?.name && decodeFirestoreDocument(payload);
+  if (!row) {
+    throw new Error("Failed to decode document.");
   }
+  return row;
+}
 
-  const accessToken = await getAccessToken(serviceAccount);
-  const documentPath = buildDocumentPath(collectionPath, documentId);
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${documentPath}`;
+export async function updateFirestoreDocument(
+  connection: ConnectionProfile,
+  collectionPath: string,
+  documentId: string,
+  data: Record<string, unknown>,
+  options: { updateMask?: string[] } = {}
+): Promise<Record<string, unknown>> {
+  if (!collectionPath) {
+    throw new Error("Collection path is missing.");
+  }
+  if (!documentId) {
+    throw new Error("Document id is missing.");
+  }
+  if (options.updateMask?.length === 0) {
+    throw new Error("Update mask must contain at least one field path.");
+  }
+  const { projectId, accessToken } = await getConnectionAccess(connection);
+  const url = getDocumentUrl(projectId, collectionPath, documentId);
+  const { updateMask } = options;
+  if (updateMask) {
+    for (const field of updateMask) {
+      url.searchParams.append("updateMask.fieldPaths", field);
+    }
+    url.searchParams.set("currentDocument.exists", "true");
+  }
 
   const response = await fetch(url, {
     method: "PATCH",
@@ -844,7 +859,9 @@ export async function updateFirestoreDocument(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      fields: encodeFirestoreFields(data, { coerceTimestampStrings: true })
+      fields: encodeFirestoreFields(updateMask ? projectRow(data, updateMask) : data, {
+        coerceTimestampStrings: true
+      })
     })
   });
 

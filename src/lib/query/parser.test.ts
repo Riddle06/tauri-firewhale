@@ -13,7 +13,7 @@ describe("parseQueryChain", () => {
       expect(result.ast.where.length).toBe(2);
       expect(result.ast.orderBy[0]?.dir).toBe("desc");
       expect(result.ast.limit).toBe(5);
-      expect(result.ast.get).toBe(true);
+      expect(result.ast.operation).toBe("get");
       expect(validateQueryAst(result.ast)).toEqual([]);
     }
   });
@@ -50,13 +50,13 @@ describe("parseQueryChain", () => {
     }
   });
 
-  test("fails on missing get()", () => {
+  test("fails on missing terminal operation", () => {
     const input = "db.collection('users').where('age', '>', 18)";
     const result = parseQueryChain(input);
     expect(result.ok).toBe(true);
     if (result.ok) {
       const errors = validateQueryAst(result.ast);
-      expect(errors.length).toBeGreaterThan(0);
+      expect(errors).toEqual(["Query must end with .get() or .count()."]);
     }
   });
 
@@ -65,4 +65,57 @@ describe("parseQueryChain", () => {
     const result = parseQueryChain(input);
     expect(result.ok).toBe(false);
   });
+
+  test("parses selected fields with nested paths, aliases, and quoting", () => {
+    const parsed = parseQueryChain(
+      'db.collection("users", "u").select("u.name", "profile.city", "u.`field.with.dot`",).get();'
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.ast.operation).toBe("get");
+    expect(parsed.ast.select).toEqual(["u.name", "profile.city", "u.`field.with.dot`"]);
+    expect(validateQueryAst(parsed.ast)).toEqual([]);
+  });
+
+  test("parses a count with explicit filters, ordering, and a limit", () => {
+    const parsed = parseQueryChain(
+      "collection('users').where('active', '==', true).orderBy('name').limit(10).count()"
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.ast.operation).toBe("count");
+    expect(parsed.ast.where).toEqual([{ field: "active", op: "==", value: true }]);
+    expect(parsed.ast.orderBy).toEqual([{ field: "name", dir: "asc" }]);
+    expect(parsed.ast.limit).toBe(10);
+    expect(validateQueryAst(parsed.ast)).toEqual([]);
+  });
+
+  for (const [chain, error] of [
+    [".select().get()", "select() requires at least one field."],
+    [".select(10).get()", "Expected string"],
+    [".select('name').select('age').get()", "Only one select() is allowed."],
+    [".count('name')", "Expected punct ')'"],
+    [".count().get()", ".count() must be the last method."],
+    [".get().count()", ".get() must be the last method."],
+    [".count().limit(5)", ".count() must be the last method."],
+    [".get(); .count()", "Expected eof"],
+  ]) {
+    test(`rejects invalid query syntax ${chain}`, () => {
+      const parsed = parseQueryChain(`collection('users')${chain}`);
+      expect(parsed.ok).toBe(false);
+      if (!parsed.ok) expect(parsed.error).toBe(error);
+    });
+  }
+
+  for (const [chain, error] of [
+    [".select('profile..city').get()", "Invalid select() field path: profile..city."],
+    [".select('name', 'u.`name`').get()", "Duplicate select() field: u.`name`."],
+    [".select('name').count()", "select() cannot be combined with count()."],
+    [".join('teams', 't', 't.id', '==', 'u.teamId').count()", "count() cannot be combined with join()."],
+    [".join('teams', 't', 't.id', '==', 'u.teamId').select('name').get()", "select() cannot be combined with join()."],
+  ]) {
+    test(`validates unsupported query ${chain}`, () => {
+      const parsed = parseQueryChain(`collection('users', 'u')${chain}`);
+      if (!parsed.ok) throw new Error(parsed.error);
+      expect(validateQueryAst(parsed.ast)).toEqual([error]);
+    });
+  }
 });

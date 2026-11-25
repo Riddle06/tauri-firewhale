@@ -14,7 +14,9 @@ const baseCompletions: CompletionOptionData[] = [
   { label: "join", type: "function" },
   { label: "orderBy", type: "function" },
   { label: "limit", type: "function" },
+  { label: "select", type: "function" },
   { label: "get", type: "function" },
+  { label: "count", type: "function" },
   { label: "asc", type: "constant" },
   { label: "desc", type: "constant" },
   {
@@ -43,9 +45,19 @@ const baseCompletions: CompletionOptionData[] = [
     snippet: ".limit(50)"
   },
   {
+    label: "select",
+    detail: "select()",
+    snippet: ".select('${field}')"
+  },
+  {
     label: "get",
     detail: "get()",
     snippet: ".get()"
+  },
+  {
+    label: "count",
+    detail: "count()",
+    snippet: ".count()"
   }
 ];
 
@@ -79,9 +91,19 @@ const chainMemberCompletions: CompletionOptionData[] = [
     snippet: "limit(50)"
   },
   {
+    label: "select",
+    detail: "select()",
+    snippet: "select('${field}')"
+  },
+  {
     label: "get",
     detail: "get()",
     snippet: "get()"
+  },
+  {
+    label: "count",
+    detail: "count()",
+    snippet: "count()"
   }
 ];
 
@@ -209,13 +231,14 @@ function fieldCompletion(
   fieldStats: FieldStatsMap,
   collectionPath: string
 ): CompletionResultData | null {
-  const match = /\b(where|orderBy)\s*\(\s*['"]([^'"]*)$/.exec(before);
+  const match = /\b(?:where|orderBy)\s*\(\s*['"]([^'"]*)$/.exec(before) ??
+    /\bselect\s*\(\s*(?:(?:'[^']*'|"[^"]*")\s*,\s*)*['"]([^'"]*)$/.exec(before);
   if (!match) return null;
   const activeCollection = resolveCollectionFromText(before, collectionPath);
   const options = buildFieldOptions(fieldStats, activeCollection);
   if (options.length === 0) return null;
   return {
-    from: pos - match[2].length,
+    from: pos - match[1].length,
     options,
     validFor: "[\\w.]*"
   };

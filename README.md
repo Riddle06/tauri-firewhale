@@ -30,6 +30,23 @@ Firewhale is a desktop workspace for Firebase Firestore. Browse collections, run
 - Result table and JSON viewers/editors for fast document inspection.
 - Built with Tauri + SvelteKit for a native-feeling desktop workflow.
 
+## Query Examples
+
+```js
+db.collection('users')
+  .where('active', '==', true)
+  .select('name', 'email', 'profile.city')
+  .get()
+
+db.collection('users')
+  .where('active', '==', true)
+  .count()
+```
+
+Use `.select()` with `.get()` to fetch specific fields from one collection. Use `__name__` to include the document ID. Opening the editor from a projected row fetches the full document.
+
+Use `.count()` as the last method to return the number of matching documents from one collection. An explicit `.limit(50)` caps the count at 50. Omit `.limit()` to count every match. An explicit `.orderBy()` counts only documents that have the sort field.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |

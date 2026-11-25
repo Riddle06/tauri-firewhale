@@ -40,14 +40,22 @@
     TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY,
     TIMESTAMP_TIMEZONE_STORAGE_KEY
   } from "$lib/utils/timestamp-settings";
-  import { parseQueryChain, validateQueryAst } from "$lib/query/parser";
-  import type { OrderByClause, QueryAst } from "$lib/query/types";
+  import { resolveRowField } from "$lib/query/field-path";
   import {
     fetchCollectionsForConnection,
+    getFirestoreDocument,
     runFirestoreCountQuery,
     runFirestoreQuery,
     runFirestoreQueryAll
   } from "$lib/query/firestore";
+  import { parseQueryChain, validateQueryAst } from "$lib/query/parser";
+  import {
+    getClientQueryProjection,
+    getProjectionFields,
+    projectResultRows,
+    sortResultRows
+  } from "$lib/query/result-rows";
+  import type { QueryAst } from "$lib/query/types";
   import type { ConnectionProfile } from "$lib/models";
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import QueryEditor from "$lib/components/QueryEditor.svelte";
@@ -97,6 +105,8 @@
   let isSidebarResizing = $state(false);
   let isResizing = $state(false);
   let runStates = $state<Record<string, QueryRunState>>({});
+  const runRequests = new SvelteMap<string, symbol>();
+  let openingProjectedEditor = $state(false);
   let runLogs = $state<Record<string, QueryLog[]>>({});
   let runSequence = $state(0);
   let workspaceShellEl = $state<HTMLDivElement | null>(null);
@@ -135,6 +145,9 @@
     clientPagination?: boolean;
     clientRows?: Record<string, unknown>[];
     totalRows?: number;
+    count?: number;
+    projectionQuery?: QueryAst;
+    requestId?: symbol;
   };
 
   type QueryLog = {
@@ -148,6 +161,7 @@
     tabId: string;
     ast: QueryAst;
     pageIndex: number;
+    requestId: symbol;
   };
 
   type DocumentViewPayload = {
@@ -166,6 +180,7 @@
     tabId: string;
     connectionId: string;
     idIsSynthetic?: boolean;
+    useUpdateMask?: boolean;
   };
 
   type DocumentWindowPayload =
@@ -243,7 +258,10 @@
   });
 
   const activeColumns = $derived.by(() => {
-    if (!activeRunState || activeRunState.rows.length === 0) return [] as string[];
+    const { projectionQuery } = activeRunState;
+    const projectionFields = projectionQuery && getProjectionFields(projectionQuery);
+    if (projectionFields) return orderTableColumns(projectionFields, $activeTab?.view?.selectedColumns);
+    if (activeRunState.rows.length === 0) return [] as string[];
     const keys = [...new Set(activeRunState.rows.flatMap((row) => Object.keys(row)))];
     const columns = keys.includes("id")
       ? ["id", ...keys.filter((key) => key !== "id")]
@@ -549,11 +567,13 @@
 
     const unsubscribe = activeConnectionId.subscribe(async (nextId) => {
       if (!nextId) {
+        runRequests.clear();
         workspaceLoading = false;
         return;
       }
       if (currentConnection === nextId) return;
       currentConnection = nextId;
+      runRequests.clear();
       runStates = {};
       runLogs = {};
       runSequence = 0;
@@ -918,34 +938,6 @@
     return DEFAULT_QUERY_LIMIT;
   }
 
-  function compareValues(left: unknown, right: unknown): number {
-    if (left == null && right == null) return 0;
-    if (left == null) return 1;
-    if (right == null) return -1;
-    if (left === right) return 0;
-    return left > right ? 1 : -1;
-  }
-
-  function sortRows(
-    rows: Record<string, unknown>[],
-    orderBy: OrderByClause[],
-    collectionAlias?: string
-  ): Record<string, unknown>[] {
-    if (orderBy.length === 0) return rows;
-    return [...rows].sort((left, right) => {
-      for (const order of orderBy) {
-        const dir = order.dir === "desc" ? -1 : 1;
-        const prefix = collectionAlias ? `${collectionAlias}.` : "";
-        const field = prefix && order.field.startsWith(prefix)
-          ? order.field.slice(prefix.length)
-          : order.field;
-        const diff = compareValues(left[field], right[field]);
-        if (diff !== 0) return diff * dir;
-      }
-      return 0;
-    });
-  }
-
   function applyClientPage(
     tabId: string,
     nextPageIndex: number
@@ -1001,14 +993,15 @@
   async function confirmClientPagination(): Promise<void> {
     const pending = clientPaginationPending;
     clearClientPaginationWarning();
-    if (!pending) return;
-    await runClientPaginationQuery(pending.ast, pending.tabId, pending.pageIndex);
+    if (!pending || runRequests.get(pending.tabId) !== pending.requestId) return;
+    await runClientPaginationQuery(pending.ast, pending.tabId, pending.pageIndex, pending.requestId);
   }
 
   async function runClientPaginationQuery(
     ast: QueryAst,
     tabId: string,
-    pageIndex: number
+    pageIndex: number,
+    requestId: symbol
   ): Promise<void> {
     const connection = $activeConnection;
     if (!connection) {
@@ -1027,17 +1020,19 @@
         clientRows: []
       }
     };
-    bottomTab = "result";
+    if ($activeTab?.id === tabId) bottomTab = "result";
     pushLog(tabId, "info", "Running query...");
 
     let queryResult;
     try {
       queryResult = await runFirestoreQueryAll(connection, {
         ...ast,
+        select: getClientQueryProjection(ast),
         orderBy: [],
         limit: undefined
       });
     } catch (error) {
+      if (runRequests.get(tabId) !== requestId) return;
       setRunError(
         tabId,
         error instanceof Error ? error.message : "Failed to run query."
@@ -1045,13 +1040,15 @@
       return;
     }
 
+    if (runRequests.get(tabId) !== requestId) return;
     const pageSize = resolveClientPageSize(ast.limit);
-    const sortedRows = sortRows(queryResult.rows, ast.orderBy, ast.collectionAlias);
+    const sortedRows = sortResultRows(queryResult.rows, ast.orderBy, ast.collectionAlias);
+    const projectedRows = projectResultRows(sortedRows, ast);
     const totalRows = sortedRows.length;
     const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
     const clampedPageIndex = Math.min(Math.max(pageIndex, 0), totalPages - 1);
     const start = clampedPageIndex * pageSize;
-    const pageRows = sortedRows.slice(start, start + pageSize);
+    const pageRows = projectedRows.slice(start, start + pageSize);
     const warnings = [...queryResult.warnings];
     if (ast.limit === undefined) {
       warnings.push(`No limit specified. Using default page size ${pageSize}.`);
@@ -1068,12 +1065,14 @@
         pageSize,
         hasNextPage: (clampedPageIndex + 1) * pageSize < totalRows,
         clientPagination: true,
-        clientRows: sortedRows,
+        clientRows: projectedRows,
+        projectionQuery: ast.select ? ast : undefined,
+        requestId,
         totalRows
       }
     };
     if (sortedRows.length > 0) {
-      recordFieldStats(ast.collectionPath, sortedRows);
+      recordFieldStats(ast.collectionPath, queryResult.rows);
     }
     if (warnings.length > 0) {
       for (const warning of warnings) {
@@ -1086,7 +1085,8 @@
   async function runServerPaginationQuery(
     ast: QueryAst,
     tabId: string,
-    pageIndex: number
+    pageIndex: number,
+    requestId: symbol
   ): Promise<void> {
     const connection = $activeConnection;
     if (!connection) {
@@ -1105,31 +1105,35 @@
         clientRows: []
       }
     };
-    bottomTab = "result";
+    if ($activeTab?.id === tabId) bottomTab = "result";
     pushLog(tabId, "info", "Running query...");
 
     let result;
     try {
       result = await runFirestoreQuery(connection, ast, { pageIndex });
     } catch (error) {
+      if (runRequests.get(tabId) !== requestId) return;
       setRunError(
         tabId,
         error instanceof Error ? error.message : "Failed to run query."
       );
       return;
     }
+    if (runRequests.get(tabId) !== requestId) return;
     runStates = {
       ...runStates,
       [tabId]: {
         status: "success",
-        rows: result.rows,
+        rows: projectResultRows(result.rows, ast),
         warnings: result.warnings,
         durationMs: result.durationMs,
         pageIndex: result.pageIndex,
         pageSize: result.pageSize,
         hasNextPage: result.hasNextPage,
         clientPagination: false,
-        clientRows: []
+        clientRows: [],
+        projectionQuery: ast.select ? ast : undefined,
+        requestId
       }
     };
     if (result.rows.length > 0) {
@@ -1143,13 +1147,42 @@
     pushLog(tabId, "info", `Returned ${result.rows.length} row(s).`);
   }
 
+  async function runCountQuery(
+    connection: ConnectionProfile,
+    ast: QueryAst,
+    tabId: string,
+    requestId: symbol
+  ): Promise<void> {
+    runStates = { ...runStates, [tabId]: { ...emptyRunState, status: "running" } };
+    bottomTab = "result";
+    pushLog(tabId, "info", "Counting documents...");
+    const start = Date.now();
+    try {
+      const count = await runFirestoreCountQuery(connection, ast, { honorQueryConstraints: true });
+      if (runRequests.get(tabId) !== requestId) return;
+      runStates = {
+        ...runStates,
+        [tabId]: { ...emptyRunState, status: "success", count, durationMs: Date.now() - start }
+      };
+      pushLog(tabId, "info", `Matched ${count.toLocaleString()} document(s).`);
+    } catch (error) {
+      if (runRequests.get(tabId) !== requestId) return;
+      setRunError(tabId, error instanceof Error ? error.message : "Failed to count documents.");
+    }
+  }
+
   async function runQuery(pageIndex = 0): Promise<void> {
     if (!$activeTab) return;
-    if (!$activeConnection) {
-      setRunError($activeTab.id, "No active connection.");
+    const tabId = $activeTab.id;
+    const requestId = Symbol();
+    runRequests.set(tabId, requestId);
+    closeContextMenu();
+    clearClientPaginationWarning();
+    const connection = $activeConnection;
+    if (!connection) {
+      setRunError(tabId, "No active connection.");
       return;
     }
-    const tabId = $activeTab.id;
     const queryText = $activeTab.queryText.trim();
 
     const parsed = parseQueryChain(queryText);
@@ -1168,7 +1201,10 @@
       updateCollectionPath(tabId, parsed.ast.collectionPath);
     }
 
-    clearClientPaginationWarning();
+    if (parsed.ast.operation === "count") {
+      await runCountQuery(connection, parsed.ast, tabId, requestId);
+      return;
+    }
     const clientPaginationEnabled = $activeTab.clientPagination ?? false;
     if (clientPaginationEnabled && parsed.ast.where.length === 0) {
       setRunError(tabId, "Client-side pagination mode requires at least one where clause.");
@@ -1178,25 +1214,27 @@
     if (clientPaginationEnabled) {
       let totalCount: number;
       try {
-        totalCount = await runFirestoreCountQuery($activeConnection, parsed.ast);
+        totalCount = await runFirestoreCountQuery(connection, parsed.ast);
       } catch (error) {
+        if (runRequests.get(tabId) !== requestId) return;
         setRunError(
           tabId,
           error instanceof Error ? error.message : "Failed to count query results."
         );
         return;
       }
+      if (runRequests.get(tabId) !== requestId) return;
       if (totalCount > CLIENT_PAGINATION_THRESHOLD) {
         clientPaginationWarningCount = totalCount;
-        clientPaginationPending = { tabId, ast: parsed.ast, pageIndex };
+        clientPaginationPending = { tabId, ast: parsed.ast, pageIndex, requestId };
         clientPaginationWarningOpen = true;
         return;
       }
-      await runClientPaginationQuery(parsed.ast, tabId, pageIndex);
+      await runClientPaginationQuery(parsed.ast, tabId, pageIndex, requestId);
       return;
     }
 
-    await runServerPaginationQuery(parsed.ast, tabId, pageIndex);
+    await runServerPaginationQuery(parsed.ast, tabId, pageIndex, requestId);
   }
 
   function selectCollection(path: string): void {
@@ -1419,6 +1457,19 @@
     if (!payload?.tabId || !payload.documentId) return;
     const previous = runStates[payload.tabId];
     if (!previous || previous.status !== "success") return;
+    if (previous.count !== undefined) return;
+    if (previous.projectionQuery) {
+      if (
+        runRequests.get(payload.tabId) !== previous.requestId ||
+        normalizeCollectionPath(previous.projectionQuery.collectionPath) !== normalizeCollectionPath(payload.collectionPath) ||
+        !$tabs.some((tab) => tab.id === payload.tabId)
+      ) return;
+      const requestId = Symbol();
+      runRequests.set(payload.tabId, requestId);
+      const run = previous.clientPagination ? runClientPaginationQuery : runServerPaginationQuery;
+      void run(previous.projectionQuery, payload.tabId, previous.pageIndex, requestId);
+      return;
+    }
     const nextRows = previous.rows.map((row) => {
       const rowId = getRowId(row);
       if (rowId === payload.documentId) {
@@ -1536,10 +1587,31 @@
   }
 
   async function openEditDocumentWindow(row: Record<string, unknown>): Promise<void> {
-    if (!$activeTab || !$activeConnectionId) return;
-    const mainRow = getMainRow(row);
-    const collectionPath = $activeTab.collectionPath || "collection";
-    const idLabel = getRowId(mainRow);
+    if (!$activeTab || !$activeConnectionId || openingProjectedEditor) return;
+    const tabId = $activeTab.id;
+    const connectionId = $activeConnectionId;
+    const projection = activeRunState.projectionQuery;
+    const collectionPath = projection?.collectionPath ?? ($activeTab.collectionPath || "collection");
+    let mainRow = getMainRow(row);
+    let idLabel = getRowId(mainRow);
+    if (projection) {
+      const connection = $activeConnection;
+      if (!connection || typeof mainRow.__docId !== "string" || !mainRow.__docId) return;
+      idLabel = mainRow.__docId;
+      closeContextMenu();
+      openingProjectedEditor = true;
+      try {
+        mainRow = await getFirestoreDocument(connection, collectionPath, idLabel);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to load document.";
+        pushLog(tabId, "error", message);
+        if ($activeTab?.id === tabId) bottomTab = "console";
+        return;
+      } finally {
+        openingProjectedEditor = false;
+      }
+      if ($activeTab?.id !== tabId || $activeConnectionId !== connectionId) return;
+    }
     const title = buildEditTitle(collectionPath, mainRow);
     const params = new URLSearchParams({
       view: "document-edit",
@@ -1553,9 +1625,10 @@
       collectionPath,
       id: idLabel,
       title,
-      tabId: $activeTab.id,
-      connectionId: $activeConnectionId,
-      idIsSynthetic: isSyntheticRowId(mainRow)
+      tabId,
+      connectionId,
+      idIsSynthetic: isSyntheticRowId(mainRow),
+      useUpdateMask: projection !== undefined
     };
 
     if (!tauriEnabled) {
@@ -1939,6 +2012,16 @@
                   <strong>Query failed.</strong>
                   <div>{activeRunState.error}</div>
                 </div>
+              {:else if activeRunState.status === "success" && activeRunState.count !== undefined}
+                <div class="panel-card">
+                  <strong>
+                    {activeRunState.count.toLocaleString()}
+                    matching {activeRunState.count === 1 ? "document" : "documents"}
+                  </strong>
+                  {#if activeRunState.durationMs !== undefined}
+                    <span> · {activeRunState.durationMs} ms</span>
+                  {/if}
+                </div>
               {:else if activeRunState.status === "success"}
                 <div class="result-summary">
                   <div>
@@ -2016,14 +2099,15 @@
                             </tr>
                           </thead>
                           <tbody>
-                            {#each activeRunState.rows as row, rowIndex (row.id ?? rowIndex)}
+                            {#each activeRunState.rows as row, rowIndex (row.__docId ?? row.id ?? rowIndex)}
                               <tr
                                 class="result-row"
                                 oncontextmenu={(event) => openRowContextMenu(event, row)}
                                 ondblclick={() => openJsonViewerWindow(row)}
                               >
                                 {#each activeColumns as column (column)}
-                                  {@const cellValue = formatCell(row[column])}
+                                  {@const value = activeRunState.projectionQuery ? resolveRowField(row, column) : row[column]}
+                                  {@const cellValue = formatCell(value)}
                                   {@const truncate = shouldTruncateColumn(column)}
                                   <td>
                                     <span
@@ -2162,6 +2246,7 @@
         <button
           class="context-menu-item"
           type="button"
+          disabled={openingProjectedEditor}
           onclick={() => contextMenu.row && openEditDocumentWindow(contextMenu.row)}
         >
           Edit document

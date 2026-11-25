@@ -47,7 +47,8 @@ export type QueryAst = {
   where: WhereClause[];
   orderBy: OrderByClause[];
   limit?: number;
-  get: boolean;
+  select?: string[];
+  operation?: "get" | "count";
 };
 
 export type QueryParseResult =

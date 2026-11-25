@@ -1,7 +1,8 @@
+import { normalizeMainField, parseFieldPath } from "./field-path";
 import { WHERE_OPERATORS } from "./types";
 import type {
-  OrderByClause,
   JoinClause,
+  OrderByClause,
   QueryAst,
   QueryParseResult,
   QueryValue,
@@ -243,8 +244,18 @@ function parseLimit(parser: Parser): number {
   return value;
 }
 
-function parseGet(parser: Parser): void {
+function parseSelect(parser: Parser): string[] {
+  if (parser.match("punct", ")")) {
+    throw new QueryParseError("select() requires at least one field.", parser.peek().pos);
+  }
+  const fields = [parseString(parser, "select field")];
+  while (parser.match("punct", ",")) {
+    parser.consume();
+    if (parser.match("punct", ")")) break;
+    fields.push(parseString(parser, "select field"));
+  }
   parser.expect("punct", ")");
+  return fields;
 }
 
 export function parseQueryChain(input: string): QueryParseResult {
@@ -284,17 +295,20 @@ export function parseQueryChain(input: string): QueryParseResult {
       collectionAlias,
       joins: [],
       where: [],
-      orderBy: [],
-      get: false
+      orderBy: []
     };
 
     while (!parser.match("eof")) {
       if (parser.match("punct", ";")) {
         parser.consume();
+        parser.expect("eof");
         break;
       }
       parser.expect("punct", ".");
-      const method = parser.expect("identifier").value;
+      const { value: method, pos } = parser.expect("identifier");
+      if (ast.operation) {
+        throw new QueryParseError(`.${ast.operation}() must be the last method.`, pos);
+      }
       parser.expect("punct", "(");
       switch (method) {
         case "where":
@@ -309,12 +323,19 @@ export function parseQueryChain(input: string): QueryParseResult {
         case "limit":
           ast.limit = parseLimit(parser);
           break;
+        case "select":
+          if (ast.select) {
+            throw new QueryParseError("Only one select() is allowed.", pos);
+          }
+          ast.select = parseSelect(parser);
+          break;
         case "get":
-          parseGet(parser);
-          ast.get = true;
+        case "count":
+          parser.expect("punct", ")");
+          ast.operation = method;
           break;
         default:
-          throw new QueryParseError(`Unknown method: ${method}`, parser.peek().pos);
+          throw new QueryParseError(`Unknown method: ${method}`, pos);
       }
     }
 
@@ -332,8 +353,30 @@ export function validateQueryAst(ast: QueryAst): string[] {
   if (!ast.collectionPath) {
     errors.push("collection() requires a collection path.");
   }
-  if (!ast.get) {
-    errors.push("Query must end with .get().");
+  if (!ast.operation) {
+    errors.push("Query must end with .get() or .count().");
+  }
+  const joins = ast.joins ?? [];
+  if (ast.operation === "count" && joins.length > 0) {
+    errors.push("count() cannot be combined with join().");
+  }
+  if (ast.select) {
+    if (ast.operation === "count") errors.push("select() cannot be combined with count().");
+    if (joins.length > 0) errors.push("select() cannot be combined with join().");
+    if (ast.select.length === 0) errors.push("select() requires at least one field.");
+    const selectedPaths = new Set<string>();
+    for (const field of ast.select) {
+      const path = parseFieldPath(normalizeMainField(field, ast.collectionAlias));
+      if (!path) {
+        errors.push(`Invalid select() field path: ${field}.`);
+        continue;
+      }
+      const key = JSON.stringify(path);
+      if (selectedPaths.has(key)) {
+        errors.push(`Duplicate select() field: ${field}.`);
+      }
+      selectedPaths.add(key);
+    }
   }
   const isAlias = (value: string): boolean => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(value);
   const aliases = new Set<string>();
@@ -341,7 +384,7 @@ export function validateQueryAst(ast: QueryAst): string[] {
     if (!isAlias(ast.collectionAlias)) errors.push("collection() alias must be an identifier.");
     aliases.add(ast.collectionAlias);
   }
-  for (const join of ast.joins ?? []) {
+  for (const join of joins) {
     if (!join.collectionPath) errors.push("join() requires a collection path.");
     if (!isAlias(join.alias)) errors.push("join() alias must be an identifier.");
     if (aliases.has(join.alias)) {
@@ -363,7 +406,7 @@ export function validateQueryAst(ast: QueryAst): string[] {
     }
     aliases.add(join.alias);
   }
-  const joinedPrefixes = (ast.joins ?? []).map((join) => `${join.alias}.`);
+  const joinedPrefixes = joins.map((join) => `${join.alias}.`);
   for (const clause of [...ast.where, ...ast.orderBy]) {
     if (joinedPrefixes.some((prefix) => clause.field.startsWith(prefix))) {
       errors.push("where() and orderBy() can only reference the main collection.");

@@ -8,7 +8,7 @@ test("runQueryAst applies where/orderBy/limit", async () => {
     where: [{ field: "status", op: "==", value: "active" }],
     orderBy: [{ field: "age", dir: "desc" }],
     limit: 2,
-    get: true
+    operation: "get"
   };
 
   const result = await runQueryAst(ast);

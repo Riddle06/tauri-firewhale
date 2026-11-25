@@ -24,7 +24,7 @@ describe("applyFirestoreJoins", () => {
       joins: [{ collectionPath: "workflows", alias: "w", leftField: "w.id", op: "==", rightField: "wes.workflowId" }],
       where: [],
       orderBy: [],
-      get: true
+      operation: "get"
     };
 
     const result = await applyFirestoreJoins("demo", "token", ast, [
@@ -66,7 +66,7 @@ describe("applyFirestoreJoins", () => {
       ],
       where: [],
       orderBy: [],
-      get: true
+      operation: "get"
     };
 
     const result = await applyFirestoreJoins("demo", "token", ast, [{ workflowSlug: "alpha" }]);
