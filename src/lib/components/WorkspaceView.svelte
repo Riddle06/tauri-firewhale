@@ -21,6 +21,7 @@
     fieldStats,
     loadWorkspaceForConnection,
     recordFieldStats,
+    recordQueryFieldStats,
     setCollections,
     setActiveTab,
     tabs,
@@ -40,7 +41,6 @@
     TIMESTAMP_DISPLAY_LOCAL_STORAGE_KEY,
     TIMESTAMP_TIMEZONE_STORAGE_KEY
   } from "$lib/utils/timestamp-settings";
-  import { resolveRowField } from "$lib/query/field-path";
   import {
     fetchCollectionsForConnection,
     getFirestoreDocument,
@@ -51,7 +51,9 @@
   import { parseQueryChain, validateQueryAst } from "$lib/query/parser";
   import {
     getClientQueryProjection,
+    getMainResultRow,
     getProjectionFields,
+    getResultCellValue,
     projectResultRows,
     sortResultRows
   } from "$lib/query/result-rows";
@@ -1071,9 +1073,7 @@
         totalRows
       }
     };
-    if (sortedRows.length > 0) {
-      recordFieldStats(ast.collectionPath, queryResult.rows);
-    }
+    recordQueryFieldStats(ast, queryResult.rows);
     if (warnings.length > 0) {
       for (const warning of warnings) {
         pushLog(tabId, "info", warning);
@@ -1136,9 +1136,7 @@
         requestId
       }
     };
-    if (result.rows.length > 0) {
-      recordFieldStats(ast.collectionPath, result.rows);
-    }
+    recordQueryFieldStats(ast, result.rows);
     if (result.warnings.length > 0) {
       for (const warning of result.warnings) {
         pushLog(tabId, "info", warning);
@@ -1516,13 +1514,6 @@
     return (row as { __idSynthetic?: boolean }).__idSynthetic === true;
   }
 
-  function getMainRow(row: Record<string, unknown>): Record<string, unknown> {
-    const mainRow = (row as { __mainRow?: unknown }).__mainRow;
-    return mainRow && typeof mainRow === "object"
-      ? (mainRow as Record<string, unknown>)
-      : row;
-  }
-
   function buildViewTitle(collectionPath: string, row: Record<string, unknown>): string {
     const collectionLabel = collectionPath || "collection";
     const idLabel = getRowId(row);
@@ -1592,7 +1583,7 @@
     const connectionId = $activeConnectionId;
     const projection = activeRunState.projectionQuery;
     const collectionPath = projection?.collectionPath ?? ($activeTab.collectionPath || "collection");
-    let mainRow = getMainRow(row);
+    let mainRow = getMainResultRow(row);
     let idLabel = getRowId(mainRow);
     if (projection) {
       const connection = $activeConnection;
@@ -2106,7 +2097,7 @@
                                 ondblclick={() => openJsonViewerWindow(row)}
                               >
                                 {#each activeColumns as column (column)}
-                                  {@const value = activeRunState.projectionQuery ? resolveRowField(row, column) : row[column]}
+                                  {@const value = getResultCellValue(row, column, activeRunState.projectionQuery)}
                                   {@const cellValue = formatCell(value)}
                                   {@const truncate = shouldTruncateColumn(column)}
                                   <td>

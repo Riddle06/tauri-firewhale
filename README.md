@@ -38,12 +38,19 @@ db.collection('users')
   .select('name', 'email', 'profile.city')
   .get()
 
+db.collection('users', 'u')
+  .join('organization', 'o', 'o.id', '==', 'u.organization')
+  .select('u.displayName', 'o.name')
+  .get()
+
 db.collection('users')
   .where('active', '==', true)
   .count()
 ```
 
-Use `.select()` with `.get()` to fetch specific fields from one collection. Use `__name__` to include the document ID. Opening the editor from a projected row fetches the full document.
+Use `.select()` with `.get()` to choose the result fields. A join query can select fields by collection alias. In JSON, selected joined fields use column names such as `o.name` as keys and return arrays, with an empty array for a row that has no match. Use `__name__` to include a document ID. Opening the editor from a projected row fetches the full primary document.
+
+The editor suggests known collections in `.join()` and recorded fields after an alias and dot in `.select()`. Successful queries record fields for each collection they read.
 
 Use `.count()` as the last method to return the number of matching documents from one collection. An explicit `.limit(50)` caps the count at 50. Omit `.limit()` to count every match. An explicit `.orderBy()` counts only documents that have the sort field.
 

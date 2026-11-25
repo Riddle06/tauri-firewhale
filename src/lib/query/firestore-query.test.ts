@@ -141,6 +141,64 @@ describe("Firestore query requests", () => {
     });
   });
 
+  test("loads join dependencies before selecting output fields in both query modes", async () => {
+    const ast: QueryAst = {
+      ...COLLECTION_QUERY,
+      joins: [{
+        collectionPath: "organization",
+        alias: "o",
+        leftField: "o.id",
+        op: "==",
+        rightField: "organization"
+      }],
+      select: ["user.displayName", "o.name"],
+      limit: 2,
+      operation: "get"
+    };
+    const documents = [
+      { document: {
+        name: "projects/demo/databases/(default)/documents/orgs/org #1?%/users/real-id",
+        fields: { displayName: { stringValue: "Avery" }, organization: { stringValue: "org-1" } }
+      } },
+      { document: {
+        name: "projects/demo/databases/(default)/documents/orgs/org #1?%/users/other-id",
+        fields: { displayName: { stringValue: "Casey" }, organization: { stringValue: "missing" } }
+      } }
+    ];
+    const organizations = [
+      { found: {
+        name: "projects/demo/databases/(default)/documents/organization/org-1",
+        fields: { name: { stringValue: "Engineering" } }
+      } }
+    ];
+
+    await withFirestoreMock([documents, organizations, documents, organizations], async (requests) => {
+      const page = await runFirestoreQuery(CONNECTION, ast);
+      const all = await runFirestoreQueryAll(CONNECTION, ast);
+      const batchGet = {
+        documents: [
+          "projects/demo/databases/(default)/documents/organization/org-1",
+          "projects/demo/databases/(default)/documents/organization/missing"
+        ]
+      };
+
+      expect(requests.map(({ url, body }) => [url.href, body])).toEqual([
+        [`${NESTED_QUERY_PARENT}:runQuery`, {
+          structuredQuery: { ...FILTERED_QUERY, orderBy: ORDER, offset: 0, limit: 2 }
+        }],
+        [`${DOCUMENTS_URL}:batchGet`, batchGet],
+        [`${NESTED_QUERY_PARENT}:runQuery`, { structuredQuery: FILTERED_QUERY }],
+        [`${DOCUMENTS_URL}:batchGet`, batchGet]
+      ]);
+      for (const result of [page, all]) {
+        expect(result.rows.map((row) => row.o)).toEqual([[{ id: "org-1", name: "Engineering" }], []]);
+        expect(result.rows.map((row) => row["o.name"])).toEqual([["Engineering"], undefined]);
+        expect(result.rows.map((row) => (row.__mainRow as Record<string, unknown>).__docId))
+          .toEqual(["real-id", "other-id"]);
+      }
+    });
+  });
+
   test("counts with explicit order and limit while keeping pagination preflight unbounded", async () => {
     const ast: QueryAst = { ...COLLECTION_QUERY, operation: "count" };
     const aggregation = (structuredQuery: Record<string, unknown>) => ({

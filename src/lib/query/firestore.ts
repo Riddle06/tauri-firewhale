@@ -526,7 +526,7 @@ async function fetchFirestoreDocumentsByField(
 type JoinedRow = { main: Record<string, unknown>; output: Record<string, unknown> };
 
 function getJoinSourceValues(
-  output: Record<string, unknown>,
+  { main, output }: JoinedRow,
   reference: string,
   collectionAlias: string | undefined,
   joinAliases: Set<string>
@@ -539,7 +539,7 @@ function getJoinSourceValues(
       row && typeof row === "object" ? resolveRowField(row as Record<string, unknown>, parsed.field) : undefined
     );
   }
-  return [resolveRowField(output, parsed.field)];
+  return [resolveRowField(main, parsed.field)];
 }
 
 function addJoinResult(
@@ -575,8 +575,8 @@ export async function applyFirestoreJoins(
     );
     const sources = new Map<string, unknown>();
     let skippedValues = 0;
-    for (const { output } of joinedRows) {
-      for (const value of getJoinSourceValues(output, join.rightField, ast.collectionAlias, joinAliases)) {
+    for (const row of joinedRows) {
+      for (const value of getJoinSourceValues(row, join.rightField, ast.collectionAlias, joinAliases)) {
         const normalizedValue = left.field === "id" ? normalizeDocumentId(value) : value;
         const key = getJoinValueKey(normalizedValue);
         if (key) {
@@ -617,19 +617,22 @@ export async function applyFirestoreJoins(
       }
     }
 
-    joinedRows = joinedRows.map(({ main, output }) => {
-      const documents = getJoinSourceValues(output, join.rightField, ast.collectionAlias, joinAliases)
+    joinedRows = joinedRows.map((row) => {
+      const documents = getJoinSourceValues(row, join.rightField, ast.collectionAlias, joinAliases)
         .flatMap((value) => {
           const normalizedValue = left.field === "id" ? normalizeDocumentId(value) : value;
           return matches.get(getJoinValueKey(normalizedValue) ?? "") ?? [];
         });
-      return { main, output: addJoinResult(output, join.alias, documents) };
+      return { main: row.main, output: addJoinResult(row.output, join.alias, documents) };
     });
     joinAliases.add(join.alias);
   }
 
   const outputRows = joinedRows.map(({ main, output }) => {
     Object.defineProperty(output, "__mainRow", { value: main, enumerable: false });
+    if (typeof main.__docId === "string" && !Object.hasOwn(output, "__docId")) {
+      Object.defineProperty(output, "__docId", { value: main.__docId, enumerable: false });
+    }
     return output;
   });
   return { rows: outputRows, warnings };
@@ -661,6 +664,7 @@ export async function runFirestoreQuery(
 ): Promise<FirestoreQueryResult> {
   const start = Date.now();
   const warnings: string[] = [];
+  const useFirestoreProjection = ast.select !== undefined && !ast.joins?.length;
   const rawPageSize = options.pageSize ?? ast.limit ?? DEFAULT_PAGE_SIZE;
   const pageSize = Number.isFinite(rawPageSize)
     ? Math.max(1, Math.floor(rawPageSize))
@@ -685,6 +689,7 @@ export async function runFirestoreQuery(
     },
     body: JSON.stringify({
       structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), {
+        includeSelect: useFirestoreProjection,
         limit: pageSize,
         offset: pageIndex * pageSize
       })
@@ -701,7 +706,7 @@ export async function runFirestoreQuery(
     projectId,
     accessToken,
     ast,
-    parseRunQueryResponse(payload, ast.select === undefined)
+    parseRunQueryResponse(payload, !useFirestoreProjection)
   );
   warnings.push(...joined.warnings);
 
@@ -721,6 +726,7 @@ export async function runFirestoreQueryAll(
 ): Promise<QueryRunResult> {
   const start = Date.now();
   const warnings: string[] = [];
+  const useFirestoreProjection = ast.select !== undefined && !ast.joins?.length;
   const { projectId, accessToken } = await getConnectionAccess(connection);
   const url = getQueryUrl(projectId, ast.collectionPath, "runQuery");
 
@@ -732,7 +738,8 @@ export async function runFirestoreQueryAll(
     },
     body: JSON.stringify({
       structuredQuery: buildStructuredQuery(normalizeMainQuery(ast), {
-        includeOrderBy: false
+        includeOrderBy: false,
+        includeSelect: useFirestoreProjection
       })
     })
   });
@@ -747,7 +754,7 @@ export async function runFirestoreQueryAll(
     projectId,
     accessToken,
     ast,
-    parseRunQueryResponse(payload, ast.select === undefined)
+    parseRunQueryResponse(payload, !useFirestoreProjection)
   );
   warnings.push(...joined.warnings);
 

@@ -1,14 +1,24 @@
-import { compactFieldPaths, normalizeMainField, parseFieldPath, resolveRowField } from "./field-path";
+import {
+  compactFieldPaths,
+  normalizeMainField,
+  parseFieldPath,
+  resolveProjectionField,
+  resolveRowField,
+} from "./field-path";
 import type { OrderByClause, QueryAst } from "./types";
 
 type Row = Record<string, unknown>;
 
 export function getProjectionFields(ast: QueryAst): string[] | undefined {
-  return ast.select?.map((field) => normalizeMainField(field, ast.collectionAlias));
+  return ast.select?.map((reference) => {
+    const field = normalizeMainField(reference, ast.collectionAlias);
+    const overlapsJoinAlias = ast.joins?.some(({ alias }) => field.startsWith(`${alias}.`));
+    return overlapsJoinAlias ? reference : field;
+  });
 }
 
 export function getClientQueryProjection(ast: QueryAst): string[] | undefined {
-  if (!ast.select) return undefined;
+  if (!ast.select || ast.joins?.length) return undefined;
   return [...ast.select, ...ast.orderBy.map((order) => order.field)];
 }
 
@@ -35,14 +45,44 @@ export function projectRow(row: Row, fields: string[]): Row {
   return projected;
 }
 
+export function getMainResultRow(row: Row): Row {
+  const metadata = Object.getOwnPropertyDescriptor(row, "__mainRow");
+  return metadata && !metadata.enumerable ? metadata.value as Row : row;
+}
+
+export function getJoinedResultRows(row: Row, alias: string): Row[] {
+  const documents = row[alias];
+  return Array.isArray(documents) ? documents : [];
+}
+
+export function getResultCellValue(row: Row, field: string, projection?: QueryAst): unknown {
+  return projection && !projection.joins?.length ? resolveRowField(row, field) : row[field];
+}
+
 export function projectResultRows(rows: Row[], ast: QueryAst): Row[] {
   const fields = getProjectionFields(ast);
-  if (!fields) return rows;
-  const paths = compactFieldPaths(fields);
+  if (!fields || !ast.select) return rows;
+  const joinFields = ast.joins?.length ? ast.select.map((reference, index) => ({
+    ...resolveProjectionField(reference, ast.collectionAlias, ast.joins),
+    column: fields[index],
+  })) : undefined;
+  const paths = joinFields ? [] : compactFieldPaths(fields);
   return rows.map((row) => {
-    const projected = projectRow(row, paths);
-    if (typeof row.__docId === "string") {
-      Object.defineProperty(projected, "__docId", { value: row.__docId });
+    const main = getMainResultRow(row);
+    const projected = joinFields
+      ? Object.fromEntries(joinFields.flatMap(({ field, joinAlias, column }) => {
+        if (joinAlias) {
+          const values = getJoinedResultRows(row, joinAlias)
+            .map((document) => resolveRowField(document, field));
+          return [[column, values]];
+        }
+        const syntheticId = main.__idSynthetic === true && (field === "id" || field === "`id`");
+        const value = syntheticId ? undefined : resolveRowField(main, field);
+        return value === undefined ? [] : [[column, value]];
+      }))
+      : projectRow(main, paths);
+    if (typeof main.__docId === "string") {
+      Object.defineProperty(projected, "__docId", { value: main.__docId });
     }
     return projected;
   });
@@ -68,8 +108,10 @@ export function sortResultRows(rows: Row[], orderBy: OrderByClause[], collection
     direction: dir === "desc" ? -1 : 1,
   }));
   return [...rows].sort((left, right) => {
+    const leftMain = getMainResultRow(left);
+    const rightMain = getMainResultRow(right);
     for (const { field, direction } of orderFields) {
-      const diff = compareValues(resolveSortField(left, field), resolveSortField(right, field));
+      const diff = compareValues(resolveSortField(leftMain, field), resolveSortField(rightMain, field));
       if (diff !== 0) return diff * direction;
     }
     return 0;

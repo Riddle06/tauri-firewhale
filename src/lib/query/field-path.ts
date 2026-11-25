@@ -1,5 +1,10 @@
 const FIELD_SEGMENT = /(?:([A-Za-z_][A-Za-z0-9_]*)|`((?:[^`\\]|\\[`\\])+)`)/y;
 
+export function formatFieldPathSegment(key: string): string {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return key;
+  return `\`${key.replace(/[`\\]/g, "\\$&")}\``;
+}
+
 export function parseFieldPath(path: string): string[] | null {
   const segments: string[] = [];
   let offset = 0;
@@ -19,6 +24,17 @@ export function parseFieldPath(path: string): string[] | null {
 export function normalizeMainField(field: string, collectionAlias?: string): string {
   const prefix = collectionAlias ? `${collectionAlias}.` : "";
   return prefix && field.startsWith(prefix) ? field.slice(prefix.length) : field;
+}
+
+export function resolveProjectionField(
+  reference: string,
+  collectionAlias?: string,
+  joins: { alias: string }[] = [],
+): { field: string; joinAlias?: string } {
+  const field = normalizeMainField(reference, collectionAlias);
+  if (field !== reference) return { field };
+  const join = joins.find(({ alias }) => reference.startsWith(`${alias}.`));
+  return join ? { field: reference.slice(join.alias.length + 1), joinAlias: join.alias } : { field };
 }
 
 export function resolveRowField(row: Record<string, unknown>, field: string): unknown {

@@ -1,3 +1,4 @@
+import { formatFieldPathSegment } from "$lib/query/field-path";
 import { formatJson } from "$lib/utils/json-highlight";
 
 export type DocumentJsonParseResult =
@@ -50,11 +51,6 @@ function equalJsonValues(left: unknown, right: unknown): boolean {
   return keys.length === Object.keys(right).length && keys.every((key) =>
     hasField(right, key) && equalJsonValues(left[key], right[key])
   );
-}
-
-function formatFieldPathSegment(key: string): string {
-  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return key;
-  return `\`${key.replace(/[`\\]/g, "\\$&")}\``;
 }
 
 export function getChangedDocumentFieldPaths(

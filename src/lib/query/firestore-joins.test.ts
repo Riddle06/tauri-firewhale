@@ -77,4 +77,41 @@ describe("applyFirestoreJoins", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("reads the main document even when a joined alias has the same name as a main field", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: string[][] = [];
+    try {
+      globalThis.fetch = async (_url, init) => {
+        const { documents } = JSON.parse(String(init?.body)) as { documents: string[] };
+        requests.push(documents);
+        return new Response(JSON.stringify([{
+          found: { name: documents[0], fields: { name: { stringValue: `Match ${requests.length}` } } }
+        }]));
+      };
+      const ast: QueryAst = {
+        collectionPath: "users",
+        collectionAlias: "u",
+        joins: [
+          { collectionPath: "orgs", alias: "organization", leftField: "organization.id", op: "==", rightField: "u.organization" },
+          { collectionPath: "audits", alias: "a", leftField: "a.id", op: "==", rightField: "u.organization" }
+        ],
+        where: [],
+        orderBy: [],
+        operation: "get"
+      };
+      const main = Object.defineProperty({ organization: "org-1" }, "__docId", { value: "user-1" });
+      const { rows } = await applyFirestoreJoins("demo", "token", ast, [main]);
+
+      expect(requests).toEqual([
+        ["projects/demo/databases/(default)/documents/orgs/org-1"],
+        ["projects/demo/databases/(default)/documents/audits/org-1"]
+      ]);
+      expect(rows[0]?.["organization.name"]).toEqual(["Match 1"]);
+      expect(rows[0]?.["a.name"]).toEqual(["Match 2"]);
+      expect(rows[0]?.__docId).toBe("user-1");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

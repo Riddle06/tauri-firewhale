@@ -1,4 +1,4 @@
-import { normalizeMainField, parseFieldPath } from "./field-path";
+import { parseFieldPath, resolveProjectionField } from "./field-path";
 import { WHERE_OPERATORS } from "./types";
 import type {
   JoinClause,
@@ -362,16 +362,16 @@ export function validateQueryAst(ast: QueryAst): string[] {
   }
   if (ast.select) {
     if (ast.operation === "count") errors.push("select() cannot be combined with count().");
-    if (joins.length > 0) errors.push("select() cannot be combined with join().");
     if (ast.select.length === 0) errors.push("select() requires at least one field.");
     const selectedPaths = new Set<string>();
     for (const field of ast.select) {
-      const path = parseFieldPath(normalizeMainField(field, ast.collectionAlias));
+      const selection = resolveProjectionField(field, ast.collectionAlias, joins);
+      const path = parseFieldPath(selection.field);
       if (!path) {
         errors.push(`Invalid select() field path: ${field}.`);
         continue;
       }
-      const key = JSON.stringify(path);
+      const key = JSON.stringify([selection.joinAlias ?? null, ...path]);
       if (selectedPaths.has(key)) {
         errors.push(`Duplicate select() field: ${field}.`);
       }

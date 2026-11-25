@@ -1,9 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { parseFieldPath, resolveRowField } from "./field-path";
-import { getClientQueryProjection, getProjectionFields, projectResultRows, sortResultRows } from "./result-rows";
+import {
+  getClientQueryProjection,
+  getProjectionFields,
+  getResultCellValue,
+  projectResultRows,
+  sortResultRows,
+} from "./result-rows";
 import type { QueryAst } from "./types";
 
 const ast: QueryAst = { collectionPath: "users", where: [], orderBy: [], operation: "get" };
+const joinedAst: QueryAst = {
+  ...ast,
+  collectionAlias: "u",
+  joins: [{ collectionPath: "organization", alias: "o", leftField: "o.id", op: "==", rightField: "organization" }],
+};
+
+function joinedRow(main: Record<string, unknown>, organizations: Record<string, unknown>[]) {
+  const row = { ...main, o: organizations };
+  Object.defineProperty(row, "__mainRow", { value: main });
+  return row;
+}
 
 describe("projected query results", () => {
   test("sorts by unselected nested fields before removing them from results", () => {
@@ -46,5 +63,38 @@ describe("projected query results", () => {
     ]);
     expect(parseFieldPath("map.`tick\\`field`.")).toBe(null);
     expect(parseFieldPath("map.`tick\\`field`")).toEqual(["map", "tick`field"]);
+  });
+
+  test("selects main and joined columns without exposing join keys or changing LEFT JOIN cardinality", () => {
+    const query: QueryAst = { ...joinedAst, select: ["u.displayName", "o.name"] };
+    const matched = { id: "stored-id", displayName: "Mia", organization: "org-1" };
+    Object.defineProperty(matched, "__docId", { value: "real-user-id" });
+    const rows = projectResultRows([
+      joinedRow(matched, [{ name: "Acme", region: "TW" }]),
+      joinedRow({ displayName: "Avery", organization: "missing" }, []),
+    ], query);
+
+    expect(getProjectionFields(query)).toEqual(["displayName", "o.name"]);
+    expect(getClientQueryProjection(query)).toBe(undefined);
+    expect(rows).toEqual([
+      { displayName: "Mia", "o.name": ["Acme"] },
+      { displayName: "Avery", "o.name": [] },
+    ]);
+    expect(rows[0].__docId).toBe("real-user-id");
+    expect(getResultCellValue(rows[0], "o.name", query)).toEqual(["Acme"]);
+    expect(getResultCellValue(rows[1], "o.name", query)).toEqual([]);
+  });
+
+  test("keeps colliding main and joined names separate and preserves one-to-many values", () => {
+    const query: QueryAst = { ...joinedAst, select: ["u.o.address.city", "o.address.city"] };
+    const [row] = projectResultRows([
+      joinedRow({ o: { address: { city: "Taipei" } } }, [
+        { address: { city: "Tainan" } },
+        { address: { city: "Taichung" } },
+      ]),
+    ], query);
+
+    expect(getProjectionFields(query)).toEqual(["u.o.address.city", "o.address.city"]);
+    expect(row).toEqual({ "u.o.address.city": "Taipei", "o.address.city": ["Tainan", "Taichung"] });
   });
 });

@@ -1,5 +1,7 @@
 import { derived, get, writable } from "svelte/store";
 import type { TabState, TabViewState, WorkspaceState } from "$lib/models";
+import { getJoinedResultRows, getMainResultRow } from "$lib/query/result-rows";
+import type { QueryAst } from "$lib/query/types";
 import { loadWorkspace, saveWorkspace } from "$lib/storage/storage";
 import {
   createTabState,
@@ -326,6 +328,13 @@ export function recordFieldStats(
     };
   });
   schedulePersist();
+}
+
+export function recordQueryFieldStats(ast: QueryAst, rows: Record<string, unknown>[]): void {
+  recordFieldStats(ast.collectionPath, ast.joins?.length ? rows.map(getMainResultRow) : rows);
+  for (const { alias, collectionPath } of ast.joins ?? []) {
+    recordFieldStats(collectionPath, rows.flatMap((row) => getJoinedResultRows(row, alias)));
+  }
 }
 
 export { workspace, activeTab, tabs, collections, fieldStats };

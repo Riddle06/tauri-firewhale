@@ -1,3 +1,5 @@
+import { formatFieldPathSegment } from "$lib/query/field-path";
+import { parseQueryChain } from "$lib/query/parser";
 import { WHERE_OPERATORS } from "$lib/query/types";
 import { normalizeCollectionPath } from "$lib/utils/state";
 import type {
@@ -128,6 +130,10 @@ const orderByDirectionSnippetCompletions: CompletionOptionData[] = [
   { label: "desc", type: "constant", snippet: "'desc'" }
 ];
 
+const COMPLETABLE_CALL = /'(?:[^'\\]|\\[\s\S])*(?:'|$)|"(?:[^"\\]|\\[\s\S])*(?:"|$)|\.\s*(join|select)\s*\(/g;
+const JOIN_COLLECTION_ARGUMENT = /^\s*(?:'((?:[^'\\]|\\[\s\S])*)|"((?:[^"\\]|\\[\s\S])*))?$/;
+const SELECT_FIELD_ARGUMENT = /^\s*(?:(?:'(?:[^'\\]|\\[\s\S])*'|"(?:[^"\\]|\\[\s\S])*")\s*,\s*)*(?:'((?:[^'\\]|\\[\s\S])*)|"((?:[^"\\]|\\[\s\S])*))$/;
+
 function resolveCollectionFromText(text: string, fallback: string): string {
   const match = /\bcollection\s*\(\s*['"]([^'"]+)['"]/.exec(text);
   if (match?.[1]) return normalizeCollectionPath(match[1]);
@@ -183,6 +189,29 @@ function buildFieldOptions(
   }));
 }
 
+function queryStringOption(
+  option: CompletionOptionData,
+  text: string,
+  quote: "'" | '"',
+  wrap = false
+): CompletionOptionData {
+  const escaped = text.replace(/\\/g, "\\\\").replaceAll(quote, `\\${quote}`);
+  const inserted = wrap ? `${quote}${escaped}${quote}` : escaped;
+  return inserted === option.label
+    ? option
+    : { ...option, snippet: inserted.replace(/[{}]/g, "\\$&") };
+}
+
+function buildSelectFieldOptions(
+  fieldStats: FieldStatsMap,
+  collection: string,
+  quote: "'" | '"'
+): CompletionOptionData[] {
+  return buildFieldOptions(fieldStats, normalizeCollectionPath(collection)).map((option) =>
+    queryStringOption(option, formatFieldPathSegment(option.label), quote)
+  );
+}
+
 function dotCompletion(
   before: string,
   pos: number
@@ -225,14 +254,70 @@ function collectionCompletion(
   };
 }
 
+function chainArgumentCompletion(before: string, request: CompletionRequest): CompletionResultData | null {
+  let activeCall: RegExpMatchArray | undefined;
+  for (const match of before.matchAll(COMPLETABLE_CALL)) {
+    if (match[1]) activeCall = match;
+  }
+  if (activeCall?.index === undefined) return null;
+
+  const args = before.slice(activeCall.index + activeCall[0].length);
+  if (activeCall[1] === "join") {
+    const match = JOIN_COLLECTION_ARGUMENT.exec(args);
+    if (!match) return null;
+    const stem = match[1] ?? match[2];
+    const quote = match[2] === undefined ? "'" : '"';
+    const options = buildCollectionOptions(request.collections).map((option) =>
+      queryStringOption(option, option.label, quote, stem === undefined)
+    );
+    return {
+      from: request.pos - (stem?.length ?? 0),
+      options,
+      validFor: stem === undefined ? undefined : "[\\w/.-]*"
+    };
+  }
+
+  const argsMatch = SELECT_FIELD_ARGUMENT.exec(args);
+  if (!argsMatch) return null;
+  const parsed = parseQueryChain(before.slice(0, activeCall.index));
+  if (!parsed.ok) return null;
+
+  const { ast } = parsed;
+  const aliases = new Map<string, string>();
+  if (ast.collectionAlias) aliases.set(ast.collectionAlias, ast.collectionPath);
+  for (const join of ast.joins ?? []) aliases.set(join.alias, join.collectionPath);
+
+  const stem = argsMatch[1] ?? argsMatch[2];
+  const quote = argsMatch[2] === undefined ? "'" : '"';
+  const qualified = /^([A-Za-z_$][\w$]*)\.([\s\S]*)$/.exec(stem);
+  const target = qualified ? aliases.get(qualified[1]) : undefined;
+  if (qualified && target !== undefined) {
+    return {
+      from: request.pos - qualified[2].length,
+      options: buildSelectFieldOptions(request.fieldStats, target, quote),
+      validFor: "[\\w.]*"
+    };
+  }
+
+  const aliasOptions = [...aliases].map(([alias, collection]) => ({
+    label: `${alias}.`,
+    detail: collection,
+    type: "variable"
+  }));
+  return {
+    from: request.pos - stem.length,
+    options: [...aliasOptions, ...buildSelectFieldOptions(request.fieldStats, ast.collectionPath, quote)],
+    validFor: aliases.size === 0 ? "[\\w.]*" : "[\\w$]*"
+  };
+}
+
 function fieldCompletion(
   before: string,
   pos: number,
   fieldStats: FieldStatsMap,
   collectionPath: string
 ): CompletionResultData | null {
-  const match = /\b(?:where|orderBy)\s*\(\s*['"]([^'"]*)$/.exec(before) ??
-    /\bselect\s*\(\s*(?:(?:'[^']*'|"[^"]*")\s*,\s*)*['"]([^'"]*)$/.exec(before);
+  const match = /\b(?:where|orderBy)\s*\(\s*['"]([^'"]*)$/.exec(before);
   if (!match) return null;
   const activeCollection = resolveCollectionFromText(before, collectionPath);
   const options = buildFieldOptions(fieldStats, activeCollection);
@@ -309,6 +394,7 @@ export function getCompletionResult(
 
   return (
     dotCompletion(before, request.pos) ??
+    chainArgumentCompletion(before, request) ??
     collectionCompletion(before, request.pos, request.collections) ??
     fieldCompletion(before, request.pos, request.fieldStats, request.collectionPath) ??
     whereOperatorCompletion(before, request.pos) ??

@@ -76,6 +76,23 @@ describe("parseQueryChain", () => {
     expect(validateQueryAst(parsed.ast)).toEqual([]);
   });
 
+  test("accepts selected fields from the main and joined collections", () => {
+    const parsed = parseQueryChain(
+      "db.collection('users', 'u').join('organization', 'o', 'o.id', '==', 'organization').select('u.displayName', 'o.name', 'u.o.name', 'profile.city').get()"
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(parsed.ast.select).toEqual(["u.displayName", "o.name", "u.o.name", "profile.city"]);
+    expect(validateQueryAst(parsed.ast)).toEqual([]);
+  });
+
+  test("recognizes a dollar sign in a joined collection alias", () => {
+    const parsed = parseQueryChain(
+      "db.collection('users').join('organization', '$o', '$o.id', '==', 'organization').select('$o.location.city').get()"
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(validateQueryAst(parsed.ast)).toEqual([]);
+  });
+
   test("parses a count with explicit filters, ordering, and a limit", () => {
     const parsed = parseQueryChain(
       "collection('users').where('active', '==', true).orderBy('name').limit(10).count()"
@@ -110,7 +127,8 @@ describe("parseQueryChain", () => {
     [".select('name', 'u.`name`').get()", "Duplicate select() field: u.`name`."],
     [".select('name').count()", "select() cannot be combined with count()."],
     [".join('teams', 't', 't.id', '==', 'u.teamId').count()", "count() cannot be combined with join()."],
-    [".join('teams', 't', 't.id', '==', 'u.teamId').select('name').get()", "select() cannot be combined with join()."],
+    [".join('teams', 't', 't.id', '==', 'u.teamId').select('t.').get()", "Invalid select() field path: t.."],
+    [".join('teams', 't', 't.id', '==', 'u.teamId').select('t.name', 't.`name`').get()", "Duplicate select() field: t.`name`."],
   ]) {
     test(`validates unsupported query ${chain}`, () => {
       const parsed = parseQueryChain(`collection('users', 'u')${chain}`);
